@@ -305,23 +305,29 @@ def _self_cmd(*args):
 
 
 def _autostart(enable=None):
+    """Query (enable=None) or set the per-user "run at sign-in" entry.
+
+    The Run key doesn't exist on every account, so create it when needed, and never
+    let a registry error take down the tray (pystray calls this to draw the checkmark).
+    """
     import winreg
     cmd = subprocess.list2cmdline(_self_cmd("run"))
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ | winreg.KEY_WRITE) as k:
+    try:
         if enable is None:
-            try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ) as k:
                 winreg.QueryValueEx(k, APP)
                 return True
-            except OSError:
-                return False
-        if enable:
-            winreg.SetValueEx(k, APP, 0, winreg.REG_SZ, cmd)
-        else:
-            try:
-                winreg.DeleteValue(k, APP)
-            except OSError:
-                pass
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+            if enable:
+                winreg.SetValueEx(k, APP, 0, winreg.REG_SZ, cmd)
+            else:
+                try:
+                    winreg.DeleteValue(k, APP)
+                except OSError:
+                    pass
         return enable
+    except OSError:
+        return False
 
 
 def start_tray(plat, sim):
@@ -509,6 +515,15 @@ def run_panel():
     root.configure(bg=BG)
     root.resizable(False, False)
     root.attributes("-topmost", True)
+    try:                                             # snowflake instead of Tk's feather
+        import base64
+        import io
+        buf = io.BytesIO()
+        _icon_image().save(buf, "PNG")
+        root._icon = tk.PhotoImage(data=base64.b64encode(buf.getvalue()))
+        root.iconphoto(True, root._icon)
+    except Exception:
+        pass
     COMPASS = ["E", "SE", "S", "SW", "W", "NW", "N", "NE"]
 
     def safe(c):
