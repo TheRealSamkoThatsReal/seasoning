@@ -46,9 +46,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download -R pal1000/mesa-dist-win -p "mesa3d-*-release-msvc.7z" -O mesa.7z
+          gh release download -R pal1000/mesa-dist-win -p "mesa3d-*-release-mingw.7z" -O mesa.7z   # the mingw build still ships opengl32.dll
           7z x mesa.7z -omesa > /dev/null
-          cp mesa/x64/*.dll dist/
+          cp mesa/x64/opengl32.dll mesa/x64/libgallium_wgl.dll mesa/x64/libdlclose-skip.dll dist/
           ls dist
       - name: Smoke test the built exe (25 s of real overlay + a screenshot)
         shell: pwsh
