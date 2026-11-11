@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+*.egg-info/
+.pytest_cache/
+seasoning-ledges.png
+docs/_wallpaper.png

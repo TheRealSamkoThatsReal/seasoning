@@ -1,0 +1,79 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install numpy pillow pytest
+      - run: python -m pytest -q tests
+
+  windows-exe:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build deps
+        run: python -m pip install numpy pillow glfw pystray pyinstaller
+      - name: Icon
+        run: python tools/make_icon.py seasoning.ico
+      - name: Build seasoning.exe
+        run: >
+          pyinstaller --noconfirm --onefile --noconsole --name seasoning --icon seasoning.ico
+          --collect-all glfw --hidden-import pystray._win32 --paths . tools/win_entry.py
+      - name: Software OpenGL for the smoke test (runners have no GPU)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download -R pal1000/mesa-dist-win -p "mesa3d-*-release-msvc.7z" -O mesa.7z
+          7z x mesa.7z -omesa > /dev/null
+          cp mesa/x64/*.dll dist/
+          ls dist
+      - name: Smoke test the built exe (25 s of real overlay + a screenshot)
+        shell: pwsh
+        env:
+          GALLIUM_DRIVER: llvmpipe
+          SEASONING_SELFTEST_SHOT: ${{ github.workspace }}\selftest.png
+          SEASONING_LOG: ${{ github.workspace }}\selftest.txt
+        run: |
+          Start-Process notepad.exe
+          Start-Sleep 3
+          $p = Start-Process -FilePath dist\seasoning.exe -ArgumentList "selftest","25" -PassThru -Wait
+          Get-Content selftest.txt
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+          if (-not (Select-String -Path selftest.txt -Pattern "seasoning selftest:")) { exit 1 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: seasoning-windows
+          path: |
+            dist/seasoning.exe
+            selftest.png
+            selftest.txt
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/seasoning.exe --generate-notes --title "seasoning ${GITHUB_REF_NAME}"
