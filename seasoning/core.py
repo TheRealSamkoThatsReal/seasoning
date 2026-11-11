@@ -137,6 +137,82 @@ def daemon_alive():
         return False
 
 
+BRIDGE_PORT = 47914
+
+
+def serve_bridge(sim):
+    """Local HTTP endpoint for the browser extension (127.0.0.1 only).
+
+    GET  /state  -> the weather (season, wind, amount, ...) so pages match the desktop
+    POST /page   -> {"titles": [...], "top": px} tabs the extension is drawing in; the
+                    desktop stops drawing its own particles over those pages' area
+    POST /command-> {"cmd": "season fall"} settings changed from the extension popup
+    """
+    import threading as _t
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def _send(self, code, body=b"{}"):
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Headers", "content-type")
+            self.send_header("Access-Control-Allow-Private-Network", "true")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_OPTIONS(self):
+            self._send(204, b"")
+
+        def do_GET(self):
+            if self.path.split("?")[0] != "/state":
+                return self._send(404)
+            body = {"app": APP, "season": sim.season, "intensity": state.get("intensity", 1.0),
+                    "wind_deg": state.get("wind_deg", 90.0), "wind": state.get("wind", 0.0),
+                    "stick": state.get("stick", 0.35), "paused": bool(sim.paused),
+                    "hidden": bool(sim.hidden)}
+            self._send(200, json.dumps(body).encode())
+
+        def do_POST(self):
+            if self.path == "/command":
+                try:
+                    n = min(int(self.headers.get("Content-Length", "0")), 4096)
+                    cmd = str(json.loads(self.rfile.read(n) or b"{}").get("cmd", ""))
+                except (ValueError, TypeError):
+                    return self._send(400)
+                # only settings the browser popup offers; run on the UI thread
+                if cmd.split(" ")[0] not in ("season", "intensity", "wind", "pause", "clear", "stick"):
+                    return self._send(403)
+                sim.plat.idle(lambda: sim.command(cmd))
+                return self._send(200)
+            if self.path != "/page":
+                return self._send(404)
+            try:
+                n = min(int(self.headers.get("Content-Length", "0")), 65536)
+                data = json.loads(self.rfile.read(n) or b"{}")
+                titles = [str(t)[:300] for t in data.get("titles", [])][:16]
+                top = max(0.0, min(float(data.get("top", 0)), 400.0))
+            except (ValueError, TypeError):
+                return self._send(400)
+            pages = getattr(sim, "pages", None) or {}
+            exp = time.monotonic() + 6.0             # the extension re-announces every ~2s
+            for t in titles:
+                pages[t] = (exp, top)
+            sim.pages = pages
+            self._send(200)
+
+        def log_message(self, *a):
+            pass
+
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", BRIDGE_PORT), H)
+    except OSError as e:
+        print(f"seasoning: browser bridge unavailable ({e})", file=sys.stderr)
+        return None
+    _t.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
 def serve(sim, register):
     """Open the control socket; `register(sock, on_ready)` hooks it into the UI loop."""
     import socket
@@ -396,7 +472,14 @@ void main() {
 }"""
 FLAKE_FS = """
 in float v_a; in vec3 v_col; flat in int v_shape; in float v_ang; out vec4 o;
+uniform vec2 u_screen; uniform float u_scale; uniform vec4 u_mask[8]; uniform int u_nmask;
 void main() {
+    vec2 fc = vec2(gl_FragCoord.x / u_scale, u_screen.y - gl_FragCoord.y / u_scale);
+    for (int i = 0; i < 8; i++) {          // web pages where the browser extension draws instead
+        if (i >= u_nmask) break;
+        vec4 m = u_mask[i];
+        if (fc.x >= m.x && fc.x < m.x + m.z && fc.y >= m.y && fc.y < m.y + m.w) discard;
+    }
     vec2 q = gl_PointCoord - vec2(0.5);
     if (v_shape == 0) {                                   // snowflake: soft disc
         float r = length(q) * 2.0;
@@ -484,7 +567,7 @@ class Renderer:
         self.pile = self.program(head + PILE_VS, head + PILE_FS)
         self.es = es
         self.u = {}
-        for prog, names in ((self.flake, ("u_screen", "u_t", "u_scale")),
+        for prog, names in ((self.flake, ("u_screen", "u_t", "u_scale", "u_mask", "u_nmask")),
                             (self.pile, ("u_screen", "u_off", "u_scale", "u_shadow", "u_occ", "u_nocc", "u_season"))):
             for n in names:
                 self.u[(prog, n)] = GL.GetUniformLocation(prog, n.encode())
@@ -544,7 +627,7 @@ class Renderer:
         GL.BufferData(0x8892, verts.nbytes, verts.ctypes.data, 0x88E8)  # DYNAMIC_DRAW
         self.pile_draws = draws
 
-    def draw(self, W, H, scale, t, season=0):
+    def draw(self, W, H, scale, t, season=0, masks=()):
         GL.ClearColor(0, 0, 0, 0)
         GL.Clear(0x4000)
         GL.Enable(0x0BE2)
@@ -577,6 +660,12 @@ class Renderer:
             GL.Uniform2f(self.u[(fp, "u_screen")], W, H)
             GL.Uniform1f(self.u[(fp, "u_scale")], scale)
             GL.Uniform1f(self.u[(fp, "u_t")], t)
+            n = min(len(masks), 8)
+            mb = (_f * 32)()
+            for i in range(n):
+                mb[i * 4:i * 4 + 4] = [float(v) for v in masks[i]]
+            GL.Uniform4fv(self.u[(fp, "u_mask")], 8, mb)
+            GL.Uniform1i(self.u[(fp, "u_nmask")], n)
             GL.BindVertexArray(self.vao_f)
             GL.DrawArrays(0, 0, self.flake_n)                  # POINTS
         GL.BindVertexArray(0)
@@ -674,6 +763,13 @@ class Pile:
             f_r = np.where(d < 0, np.minimum(f, 0.5 * h[:-1]), 0.0)   # left -> right
             h[1:] += f_r - f_l
             h[:-1] += f_l - f_r
+            # snow that slides stays loose, so a landing keeps slumping until it rests
+            # (otherwise sparse snowfall freezes into separate little towers)
+            fr = self.fresh
+            fr[:-1] = np.where(f_l > 0, np.maximum(fr[:-1], fr[1:]), fr[:-1])
+            fr[1:] = np.where(f_r > 0, np.maximum(fr[1:], fr[:-1]), fr[1:])
+            loose = fr > 0
+            R = np.where(loose[1:] | loose[:-1], self.repose, COHESION)
             if h[0] > self.edge:
                 x = (h[0] - self.edge) * 0.3
                 h[0] -= x
@@ -909,6 +1005,7 @@ class Sim:
             self.land_block_until = now + dur
         self.visible = seen
         self.rects = rects
+        self.masks = self.page_masks(vis)
         for p in self.ledges:                      # the wallpaper is behind every window
             p.set_occluders(rects)
         self.pile_check = True
@@ -969,6 +1066,23 @@ class Sim:
         self.pile_check = True
         print(f"seasoning: {len(self.ledges)} ledges on {os.path.basename(path)}", file=sys.stderr)
         return False
+
+    def page_masks(self, vis):
+        """Page areas of browser windows showing a tab the extension is animating."""
+        pages = getattr(self, "pages", None)
+        if not pages:
+            return []
+        now = time.monotonic()
+        live = {t: v for t, v in list(pages.items()) if v[0] > now}
+        self.pages = live
+        out = []
+        for c in vis:
+            title = c.get("title") or ""
+            for t, (_, top) in live.items():
+                if t and t in title:
+                    out.append((c["x"], c["y"] + top, c["w"], max(0, c["h"] - top)))
+                    break
+        return out[:8]
 
     def set_hidden(self, hide):
         if hide != self.hidden:
@@ -1440,7 +1554,8 @@ class Sim:
             return json.dumps({**state, "paused": self.paused, "hidden": self.hidden,
                                "flakes": int(self.alive.sum()), "piles": len(self.visible),
                                "ledges": len(self.ledges), "wallpaper": self.wp_path,
-                               "season_now": self.season})
+                               "season_now": self.season,
+                               "pages": len(getattr(self, "masks", []))})
         if c == "dumpstyle":
             a = np.nonzero(self.alive)[0][:12]
             return json.dumps({"season": self.season, "n": int(self.alive.sum()),
@@ -1473,6 +1588,8 @@ class Sim:
                 "pile_mass": {k: round(float(p.h.sum()), 1) for k, p in self.piles.items()},
                 "ledge_snow": [round(float(p.h.sum()), 1) for p in self.ledges],
                 "corners": self.deco,
+                "bridge_pages": sorted(getattr(self, "pages", {}) or {}),
+                "masks": getattr(self, "masks", []),
             })
         if c == "wind" and len(parts) == 3:
             state["wind_deg"] = float(parts[1]) % 360

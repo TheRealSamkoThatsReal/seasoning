@@ -181,3 +181,18 @@ def test_bezier_ease():
     vals = [e(t / 20) for t in range(21)]
     assert vals[0] == 0.0 and vals[-1] == 1.0
     assert all(b >= a - 1e-9 for a, b in zip(vals, vals[1:]))
+
+
+def test_browser_page_mask():
+    """A tab the extension announced hides desktop particles over that window's page area."""
+    import time
+    wins = [{"addr": "B", "x": 100, "y": 50, "w": 1200, "h": 800, "title": "My Page — Zen Browser"},
+            {"addr": "T", "x": 1350, "y": 50, "w": 500, "h": 400, "title": "terminal"}]
+    sim = make_sim(windows=wins, state={"season": "winter"})
+    assert sim.masks == []
+    sim.pages = {"My Page": (time.monotonic() + 5, 90.0)}
+    sim.poll()
+    assert sim.masks == [(100, 50 + 90.0, 1200, 800 - 90.0)]
+    sim.pages = {"My Page": (time.monotonic() - 1, 90.0)}      # announcement expired
+    sim.poll()
+    assert sim.masks == []

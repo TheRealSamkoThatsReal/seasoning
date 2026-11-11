@@ -102,7 +102,8 @@ class HyprPlatform:
         vis.sort(key=rank, reverse=True)              # topmost first
         b = getattr(self, "border", 2)
         wins = [{"addr": c["address"], "x": c["at"][0] - mx - b, "y": c["at"][1] - my - b,
-                 "w": c["size"][0] + 2 * b, "h": c["size"][1] + 2 * b} for c in vis]
+                 "w": c["size"][0] + 2 * b, "h": c["size"][1] + 2 * b, "title": c.get("title", "")}
+                for c in vis]
         return {"origin": (mx, my), "size": (W, H), "refresh": float(mon.get("refreshRate", 60.0)),
                 "ws": ws, "special": sp, "windows": wins,
                 "alive": {c["address"] for c in clients},
@@ -298,7 +299,7 @@ def run_overlay():
             frame["renders"] += 1
             t = (frame["now"] - frame["step_at"]) / frame["step_dt"]
             g.draw(float(a.get_width()), float(a.get_height()), float(a.get_scale_factor()),
-                   min(max(t, 0.0), 1.0), SEASONS[sim.season]["shape"])
+                   min(max(t, 0.0), 1.0), SEASONS[sim.season]["shape"], getattr(sim, "masks", ()))
             return True
         area.connect("realize", on_gl_realize)
         area.connect("render", on_gl_render)
@@ -342,6 +343,7 @@ def run_overlay():
             GLib.io_add_watch(srv.fileno(), GLib.PRIORITY_DEFAULT, GLib.IO_IN,
                               lambda *_: (on_ready(), True)[1])
         app._srv = serve(sim, register)
+        app._bridge = core.serve_bridge(sim)
         app.hold()
 
     app.connect("activate", activate)

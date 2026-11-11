@@ -7,3 +7,4 @@ dist/
 .pytest_cache/
 seasoning-ledges.png
 docs/_wallpaper.png
+extension/dist/

@@ -15,7 +15,9 @@ Sweep the cursor through a pile and you plow a trench.
 | ![spring](docs/spring.png) | ![summer](docs/summer.png) |
 
 Runs on **Windows 10/11** and on **Linux with Hyprland**. It's click-through, renders
-on the GPU, and uses a few percent of one CPU core.
+on the GPU, and uses a few percent of one CPU core. A **browser extension** (Chrome,
+Firefox and anything based on them, including **ChromeOS**) lets it land on the
+elements of web pages too.
 
 Inspired by [Snowy](https://snowy.aauburn.com) by Archie, an open-source snow app for macOS.
 
@@ -71,6 +73,38 @@ windowrule = float, class:^(seasoning\.panel)$
 
 Wallpaper edges are read from `awww`, `swww` or `hyprpaper`.
 
+## Browser extension
+
+The extension lets the season land on web pages: snow, leaves or petals pile up on
+cards, images, buttons and video players.
+
+- **Scrolling:** piles scroll with the page.
+- **Shapes and stacking:** piles follow rounded corners and stop where a menu or overlay covers an edge.
+- **Moving elements:** snow falls off when an element moves or disappears.
+- **Cursor:** dragging the cursor through a pile plows it.
+
+**With the desktop app running**, the two work together:
+
+- **Same weather:** the extension takes the app's season, wind and amount, so the page matches your desktop.
+- **Hand-off at the page:** the app stops drawing its own particles over the page area of the browser window, and the extension draws there instead, so pages don't get double snow.
+- **Settings:** changes in the extension's popup change the desktop app too. Untick **Sync with the desktop app** to keep separate page settings.
+
+The extension finds the app on `127.0.0.1` (port 47914, local only).
+
+**On its own**, for example on ChromeOS or anywhere without the app, the extension draws everything itself.
+
+Install from the [latest release](../../releases/latest):
+
+- **Chrome, Edge, Brave, ChromeOS:** unzip `seasoning-chrome-*.zip`. Open `chrome://extensions`, turn on **Developer mode**, then **Load unpacked** and pick the folder.
+- **Firefox:** the `.xpi` is not signed yet. Release Firefox only installs signed add-ons, so for now load it from `about:debugging` → **This Firefox** → **Load Temporary Add-on**. That lasts until the browser restarts.
+- **Zen or Firefox Developer Edition:** set `xpinstall.signatures.required` to `false` in `about:config`, then drag the `.xpi` into the window.
+
+Build from source with `python extension/build.py`. To run the end-to-end test in Chromium:
+
+```sh
+npm i --prefix extension/test playwright && node extension/test/run.js
+```
+
 ## Commands
 
 The same commands work on both platforms while the overlay is running:
@@ -108,7 +142,8 @@ python -m pytest tests     # headless simulation tests, no display needed
 
 - **One monitor:** it uses the primary monitor.
 - **Windows virtual desktops:** switching drops each window's snow at once, rather than the per-column slide on Hyprland.
-- **ChromeOS isn't supported.** Linux apps there run in a container that can't draw over other windows, make itself click-through, or see where your windows are. A browser extension could do snow over web pages, but that would be a different project.
+- **ChromeOS:** only the browser extension works there. Linux apps on ChromeOS run in a container that can't draw over other windows, make itself click-through, or see where your windows are, so the desktop app can't run.
+- **Browser hand-off:** the app recognises the browser window by its title, which contains the page title. With display scaling other than 100% on Hyprland, the masked page area can be a little off.
 
 ## License
 

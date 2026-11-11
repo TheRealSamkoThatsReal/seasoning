@@ -200,7 +200,8 @@ class WinPlatform:
             zoomed = bool(user32.IsZoomed(hwnd))
             pref = _dwm_int(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE) if self.win11 else None
             radius = 0.0 if (not self.win11 or zoomed or pref == 1) else (4.0 if pref == 3 else 8.0)
-            wins.append({"addr": int(hwnd), "x": l, "y": t, "w": w, "h": h, "radius": radius})
+            wins.append({"addr": int(hwnd), "x": l, "y": t, "w": w, "h": h, "radius": radius,
+                         "title": _title(hwnd)})
         # the bottom pile rests on the taskbar (top of it = bottom of the work area)
         wa = wintypes.RECT()
         floor_y = self.H
@@ -429,6 +430,7 @@ def run_overlay(selftest=0.0):
 
     ipc = []
     serve(sim, lambda srv, on_ready: ipc.append(on_ready))
+    core.serve_bridge(sim)
     tray = start_tray(plat, sim)
 
     sim.poll()
@@ -473,7 +475,8 @@ def run_overlay(selftest=0.0):
             fw, fh = glfw.get_framebuffer_size(win)
             core.GL.Viewport(0, 0, fw, fh)
             t = min(max((now - step_at) / step_dt, 0.0), 1.0)
-            renderer.draw(float(plat.W), float(plat.H), fw / max(plat.W, 1), t, SEASONS[sim.season]["shape"])
+            renderer.draw(float(plat.W), float(plat.H), fw / max(plat.W, 1), t, SEASONS[sim.season]["shape"],
+                          getattr(sim, "masks", ()))
             glfw.swap_buffers(win)
             frames += 1
             if not sim.alive.any() and not any(p.dirty for p in sim.surfaces()):

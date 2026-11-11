@@ -82,9 +82,49 @@ jobs:
             selftest.png
             panel.png
             selftest.txt
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
+
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: python -m pip install numpy pillow
+      - name: Build Chrome + Firefox packages
+        run: python extension/build.py
+      - name: End-to-end test in Chromium
+        run: |
+          npm i --prefix extension/test playwright
+          npx --prefix extension/test playwright install --with-deps chromium
+          SHOT=extension-test.png node extension/test/run.js
+      - name: Lint the Firefox build (addons.mozilla.org checks)
+        run: npx -y web-ext lint -s extension/dist/firefox
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: seasoning-extension
+          path: |
+            extension/dist/*.zip
+            extension/dist/*.xpi
+            extension-test.png
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows-exe, extension]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/seasoning.exe --generate-notes --title "seasoning ${GITHUB_REF_NAME}"
+        run: |
+          gh release create "${GITHUB_REF_NAME}" -R "${GITHUB_REPOSITORY}" --generate-notes \
+            --title "seasoning ${GITHUB_REF_NAME}" \
+            artifacts/seasoning-windows/dist/seasoning.exe \
+            artifacts/seasoning-extension/extension/dist/*.zip artifacts/seasoning-extension/extension/dist/*.xpi

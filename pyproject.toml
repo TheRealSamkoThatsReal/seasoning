@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "seasoning"
-version = "0.1.0"
+version = "0.2.0"
 description = "Seasonal snow, leaves and petals that fall on your desktop and pile up on your windows"
 readme = "README.md"
 license = "MIT"
