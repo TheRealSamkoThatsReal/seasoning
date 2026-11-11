@@ -99,7 +99,7 @@ jobs:
       - name: End-to-end test in Chromium
         run: |
           npm i --prefix extension/test playwright
-          npx --prefix extension/test playwright install --with-deps chromium
+          npx --prefix extension/test playwright install chromium   # runner images already have the system libs
           SHOT=extension-test.png node extension/test/run.js
       - name: Lint the Firefox build (addons.mozilla.org checks)
         run: npx -y web-ext lint -s extension/dist/firefox
