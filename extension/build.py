@@ -12,7 +12,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 BASE = {
     "manifest_version": 3,
     "name": "seasoning",

@@ -190,9 +190,41 @@ def test_browser_page_mask():
             {"addr": "T", "x": 1350, "y": 50, "w": 500, "h": 400, "title": "terminal"}]
     sim = make_sim(windows=wins, state={"season": "winter"})
     assert sim.masks == []
-    sim.pages = {"My Page": (time.monotonic() + 5, 90.0)}
+    now = time.monotonic()
+    sim.pages = {"My Page": {"exp": now + 5, "top": 90.0, "left": 0.0, "k": 1.0, "polled": now}}
     sim.poll()
     assert sim.masks == [(100, 50 + 90.0, 1200, 800 - 90.0)]
-    sim.pages = {"My Page": (time.monotonic() - 1, 90.0)}      # announcement expired
+    sim.pages["My Page"]["polled"] = now - 5                     # tab stopped taking hand-offs
     sim.poll()
     assert sim.masks == []
+    sim.pages = {"My Page": {"exp": now - 1, "top": 90.0, "left": 0.0, "k": 1.0, "polled": now}}
+    sim.poll()                                                   # announcement expired
+    assert sim.masks == []
+
+
+def test_particles_hand_off_to_page_and_back():
+    """A particle drifting into an animated page is passed over, not hidden; returns come back."""
+    import time
+    wins = [{"addr": "B", "x": 0, "y": 300, "w": 1920, "h": 780, "title": "Pg — Browser"}]
+    sim = make_sim(windows=wins, state={"season": "fall", "intensity": 2.0})
+    now = time.monotonic()
+    sim.pages = {"Pg": {"exp": now + 60, "top": 40.0, "left": 0.0, "k": 1.0, "polled": now}}
+    sim.poll()
+    got = []
+    for _ in range(36 * 8):
+        sim.step(1 / 36)
+        sim.pages["Pg"]["polled"] = time.monotonic()
+        with sim.hand_lock:
+            got += sim.handoff.pop("Pg", [])
+    assert len(got) > 20
+    over_page = sim.alive & (sim.y > 345) & (sim.y < 1080) & (sim.x >= 0) & (sim.x < 1920)
+    assert not over_page.any()                                   # nothing left drawn over the page
+    p = got[-1]                                                  # (the first ones are the initial fill)
+    assert {"x", "y", "d", "r", "ph", "fr", "sw", "ang", "col"} <= set(p)
+    assert -1 <= p["y"] <= 40                                    # handed over right at the page's top
+    n0 = int(sim.alive.sum())
+    back = dict(p, x=-5.0, y=200.0)                              # left the page through its left side
+    with sim.hand_lock:
+        sim.handback.append(("Pg", back))
+    sim.step(1 / 36)
+    assert int(sim.alive.sum()) >= n0

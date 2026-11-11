@@ -424,21 +424,22 @@
     t += dt; frame++;
     const s = S(), [wx, wy] = wind();
     const target = Math.round(BASE * amount() * s.count);
-    if (prefill) { spawn(target, true); prefill = false; }
-    if (!paused()) {
+    if (prefill) { if (!companion) spawn(target, true); prefill = false; }
+    if (!paused() && !companion) {        // with the desktop app, particles arrive by hand-off
       spawnAcc += ((1.8 * target * FALL * s.fall) / (H + 60)) * dt;
       let live = 0; for (let i = 0; i < CAP; i++) live += P.alive[i];
       if (live < target && spawnAcc >= 1) { const k = Math.min(spawnAcc | 0, target - live); spawnAcc -= spawnAcc | 0; spawn(k, false); }
     }
     cursorStep();
     const decx = 0.97 ** (dt * 60), decy = 0.95 ** (dt * 60), list = [...piles.values()];
+    const tw = (Date.now() / 1000) % 86400;   // sway clock shared with the desktop app
     for (let i = 0; i < CAP; i++) {
       if (!P.alive[i]) continue;
       const d = P.d[i];
       let fall = FALL * s.fall * (0.45 + 0.9 * d);
-      if (s.shape === 1 || s.shape === 2) fall *= 1 + 0.55 * Math.sin(P.ph2[i] + t * P.fr[i] * 2.9);
+      if (s.shape === 1 || s.shape === 2) fall *= 1 + 0.55 * Math.sin(P.ph2[i] + tw * P.fr[i] * 2.9);
       const vy = Math.max(fall + wy * s.wind * (0.5 + d), 12 * s.fall) + P.vy[i];
-      const sway = P.sw[i] * s.sway * (Math.sin(P.ph[i] + t * P.fr[i]) + 0.45 * Math.sin(P.ph2[i] + t * P.fr[i] * 2.37));
+      const sway = P.sw[i] * s.sway * (Math.sin(P.ph[i] + tw * P.fr[i]) + 0.45 * Math.sin(P.ph2[i] + tw * P.fr[i] * 2.37));
       const vx = wx * s.wind * (0.45 + 0.9 * d) + P.vx[i] + sway;
       P.vx[i] *= decx; P.vy[i] *= decy;
       const py = P.y[i];
@@ -461,7 +462,11 @@
           }
         }
       }
-      if (P.y[i] > H + 20 || P.y[i] < -300 || P.x[i] < -80 || P.x[i] > W + 80) P.alive[i] = 0;
+      if (companion && P.alive[i] && (P.y[i] > H || P.x[i] < 0 || P.x[i] > W)) {
+        // leaving the page through its side or bottom: back to the desktop
+        if (handback.length < 300) handback.push(pack(i));
+        P.alive[i] = 0;
+      } else if (P.y[i] > H + 20 || P.y[i] < -300 || P.x[i] < -80 || P.x[i] > W + 80) P.alive[i] = 0;
     }
     for (let k = 0; k < list.length; k++) if ((k + frame) % 4 === 0) list[k].settle(dt * 4, wx);
     while (spills.length) {
@@ -598,9 +603,11 @@
     // tell the desktop app (through the background script) which page we're animating
     if (!cfg.companion) { if (companion) { companion = null; prefill = true; } return; }
     if (document.visibilityState !== "visible" || !active()) return;
-    const top = Math.max(0, (outerHeight - innerHeight)) * (window.devicePixelRatio || 1);
+    const k = window.devicePixelRatio || 1;
+    const top = Math.max(0, outerHeight - innerHeight) * k;     // toolbars above the page
+    const left = Math.max(0, outerWidth - innerWidth) * k;      // a sidebar (Zen, Firefox) on the left
     try {
-      api.runtime.sendMessage({ type: "hello", title: document.title, top }, (res) => {
+      api.runtime.sendMessage({ type: "hello", title: document.title, top, left, dpr: k }, (res) => {
         void api.runtime.lastError;
         const was = !!companion;
         companion = res && res.companion ? res.companion : null;
@@ -610,6 +617,40 @@
   }
   hello();
   setInterval(hello, 2000);
+
+  // ── hand-off with the desktop app ───────────────────────────────────────
+  // With the app running, the page's particles ARE the desktop's: ones that drift
+  // into the page are handed over (same position, speed, wobble, colour) and ones that
+  // leave through the sides or bottom are handed back.
+  const handback = [];
+  const hex = (c) => "#" + c.map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255)
+    .toString(16).padStart(2, "0")).join("");
+  function pack(i) {
+    const c = parseInt(P.col[i].slice(1), 16);
+    return { x: +P.x[i].toFixed(2), y: +P.y[i].toFixed(2), d: P.d[i], r: P.r[i], vx: P.vx[i], vy: P.vy[i],
+             ph: P.ph[i], ph2: P.ph2[i], fr: P.fr[i], sw: P.sw[i], ang: P.ang[i], spin: P.spin[i],
+             col: [(c >> 16) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255],
+             near: !!P.near[i], sticky: !!P.sticky[i] };
+  }
+  function adopt(it) {
+    const i = free(); if (i < 0) return;
+    P.x[i] = it.x; P.y[i] = it.y; P.d[i] = it.d; P.r[i] = it.r; P.vx[i] = it.vx; P.vy[i] = it.vy;
+    P.ph[i] = it.ph; P.ph2[i] = it.ph2; P.fr[i] = it.fr; P.sw[i] = it.sw; P.ang[i] = it.ang; P.spin[i] = it.spin;
+    P.col[i] = hex(it.col); P.near[i] = it.near ? 1 : 0; P.sticky[i] = it.sticky ? 1 : 0; P.origin[i] = null;
+    P.alive[i] = 1;
+  }
+  let inflight = false;
+  setInterval(() => {
+    if (!companion || !running || inflight || document.visibilityState !== "visible") return;
+    inflight = true;
+    try {
+      api.runtime.sendMessage({ type: "handoff", title: document.title, back: handback.splice(0) }, (res) => {
+        void api.runtime.lastError;
+        inflight = false;
+        if (res && res.items) for (const it of res.items) adopt(it);
+      });
+    } catch (e) { inflight = false; }
+  }, 50);
   function stats() {
     let n = 0; for (let i = 0; i < CAP; i++) n += P.alive[i];
     const big = [...piles.values()].sort((a, b) => b.mass() - a.mass())[0];

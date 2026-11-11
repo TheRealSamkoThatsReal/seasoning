@@ -165,7 +165,18 @@ def serve_bridge(sim):
             self._send(204, b"")
 
         def do_GET(self):
-            if self.path.split("?")[0] != "/state":
+            from urllib.parse import parse_qs, urlparse
+            u = urlparse(self.path)
+            if u.path == "/handoff":
+                # the extension collects particles that drifted into its page
+                title = (parse_qs(u.query).get("title") or [""])[0]
+                pages = getattr(sim, "pages", None) or {}
+                if title in pages:
+                    pages[title]["polled"] = time.monotonic()
+                with sim.hand_lock:
+                    items = sim.handoff.pop(title, [])
+                return self._send(200, json.dumps(items).encode())
+            if u.path != "/state":
                 return self._send(404)
             body = {"app": APP, "season": sim.season, "intensity": state.get("intensity", 1.0),
                     "wind_deg": state.get("wind_deg", 90.0), "wind": state.get("wind", 0.0),
@@ -185,6 +196,19 @@ def serve_bridge(sim):
                     return self._send(403)
                 sim.plat.idle(lambda: sim.command(cmd))
                 return self._send(200)
+            if self.path == "/handback":
+                # particles leaving the page through its sides/bottom come back here
+                try:
+                    n = min(int(self.headers.get("Content-Length", "0")), 262144)
+                    data = json.loads(self.rfile.read(n) or b"{}")
+                    title = str(data.get("title", ""))[:300]
+                    items = list(data.get("items", []))[:300]
+                except (ValueError, TypeError):
+                    return self._send(400)
+                with sim.hand_lock:
+                    sim.handback.extend((title, it) for it in items if isinstance(it, dict))
+                    del sim.handback[:-600]
+                return self._send(200)
             if self.path != "/page":
                 return self._send(404)
             try:
@@ -192,12 +216,15 @@ def serve_bridge(sim):
                 data = json.loads(self.rfile.read(n) or b"{}")
                 titles = [str(t)[:300] for t in data.get("titles", [])][:16]
                 top = max(0.0, min(float(data.get("top", 0)), 400.0))
+                left = max(0.0, min(float(data.get("left", 0)), 800.0))
+                k = max(0.25, min(float(data.get("dpr", 1.0)), 4.0))    # desktop px per CSS px
             except (ValueError, TypeError):
                 return self._send(400)
             pages = getattr(sim, "pages", None) or {}
             exp = time.monotonic() + 6.0             # the extension re-announces every ~2s
             for t in titles:
-                pages[t] = (exp, top)
+                old = pages.get(t, {})
+                pages[t] = {"exp": exp, "top": top, "left": left, "k": k, "polled": old.get("polled", 0)}
             sim.pages = pages
             self._send(200)
 
@@ -926,6 +953,11 @@ class Sim:
         # land back on that same window/ledge
         self.origin = np.full(n, -1, np.int64)
         self.owner_ids = {}
+        self.handoff = {}            # page title -> particles waiting for the extension
+        self.handback = []           # (title, particle) coming back from a page
+        self.hand_lock = threading.Lock()
+        self.mask_info = []
+        self.hand_stats = {"out": 0, "back": 0}
         self.alive = np.zeros(n, bool)
         self.vx_extra = np.zeros(n)
         self.vy_extra = np.zeros(n)
@@ -1068,21 +1100,94 @@ class Sim:
         return False
 
     def page_masks(self, vis):
-        """Page areas of browser windows showing a tab the extension is animating."""
+        """Page areas of browser windows showing a tab the extension is animating.
+
+        Only while that tab keeps collecting hand-offs (polls within the last second):
+        a hidden/closed tab gives the area straight back to the desktop.
+        """
         pages = getattr(self, "pages", None)
+        self.mask_info = []
         if not pages:
             return []
         now = time.monotonic()
-        live = {t: v for t, v in list(pages.items()) if v[0] > now}
+        live = {t: v for t, v in list(pages.items()) if v["exp"] > now}
         self.pages = live
         out = []
         for c in vis:
             title = c.get("title") or ""
-            for t, (_, top) in live.items():
-                if t and t in title:
-                    out.append((c["x"], c["y"] + top, c["w"], max(0, c["h"] - top)))
+            for t, v in live.items():
+                if t and t in title and now - v.get("polled", 0) < 1.0:
+                    x, y = c["x"] + v["left"], c["y"] + v["top"]
+                    w, h = max(0, c["w"] - v["left"]), max(0, c["h"] - v["top"])
+                    out.append((x, y, w, h))
+                    self.mask_info.append((t, x, y, w, h, v["k"]))
                     break
         return out[:8]
+
+    # ── particle hand-off with the browser extension ─────────────────────
+    HAND_FIELDS = ("d", "r", "vx", "vy", "ph", "ph2", "fr", "sw", "ang", "spin")
+
+    def hand_off(self):
+        """Particles that drift into an animated web page continue there: pass them over."""
+        info = getattr(self, "mask_info", None)
+        if not info:
+            return
+        a = self.alive
+        for title, mx, my, mw, mh, k in info:
+            inside = a & (self.x >= mx) & (self.x < mx + mw) & (self.y >= my) & (self.y < my + mh)
+            idx = np.nonzero(inside)[0]
+            if not len(idx):
+                continue
+            items = []
+            for i in idx[:300].tolist():
+                items.append({
+                    "x": round((self.x[i] - mx) / k, 2), "y": round((self.y[i] - my) / k, 2),
+                    "d": round(float(self.depth[i]), 3), "r": round(float(self.r[i]) / k, 3),
+                    "vx": round(float(self.vx_extra[i]) / k, 2), "vy": round(float(self.vy_extra[i]) / k, 2),
+                    "ph": round(float(self.phase[i]), 4), "ph2": round(float(self.phase2[i]), 4),
+                    "fr": round(float(self.freq[i]), 4), "sw": round(float(self.sway[i]) / k, 3),
+                    "ang": round(float(self.ang[i]), 3), "spin": round(float(self.spin[i]), 3),
+                    "col": [round(float(c), 3) for c in self.col[i]],
+                    "near": bool(self.collide[i]), "sticky": bool(self.sticky[i])})
+            self.alive[idx] = False
+            self.hand_stats["out"] += len(items)
+            with self.hand_lock:
+                q = self.handoff.setdefault(title, [])
+                q.extend(items)
+                del q[:-600]
+
+    def take_handback(self):
+        """Particles leaving a web page (sides/bottom) come back to the desktop."""
+        back = getattr(self, "handback", None)
+        if not back:
+            return
+        info = {t: (mx, my, k) for t, mx, my, mw, mh, k in getattr(self, "mask_info", [])}
+        with self.hand_lock:
+            items, self.handback = self.handback, []
+        free = np.nonzero(~self.alive)[0]
+        n = 0
+        for title, it in items:
+            if title not in info or n >= len(free):
+                continue
+            mx, my, k = info[title]
+            i = free[n]
+            n += 1
+            self.x[i] = self.px[i] = mx + float(it["x"]) * k
+            self.y[i] = self.py[i] = my + float(it["y"]) * k
+            self.depth[i] = float(it["d"])
+            self.r[i] = float(it["r"]) * k
+            self.vx_extra[i] = float(it["vx"]) * k
+            self.vy_extra[i] = float(it["vy"]) * k
+            self.phase[i], self.phase2[i] = float(it["ph"]), float(it["ph2"])
+            self.freq[i], self.sway[i] = float(it["fr"]), float(it["sw"]) * k
+            self.ang[i] = self.pang[i] = float(it["ang"])
+            self.spin[i] = float(it["spin"])
+            self.col[i] = it["col"]
+            self.collide[i] = bool(it["near"])
+            self.sticky[i] = bool(it["sticky"])
+            self.origin[i] = -1
+            self.alive[i] = True
+            self.hand_stats["back"] += 1
 
     def set_hidden(self, hide):
         if hide != self.hidden:
@@ -1295,14 +1400,18 @@ class Sim:
         if ws is not None and ws != self.ws_active:
             self.poll()
         self.release_step()
+        # sway runs on the wall clock (shared with the browser extension, so a particle
+        # handed to a web page keeps its exact wobble)
+        tw = time.time() % 86400.0
+        self.take_handback()
         # extra velocity (cursor kicks, shake-offs) may send flakes upward for a moment
         fall = FALL * S["fall"] * (0.45 + 0.9 * d)
         if S["shape"] in (1, 2):
             # leaves and petals flutter: they speed up and stall as they rock
-            fall = fall * (1.0 + 0.55 * np.sin(self.phase2 + self.t * self.freq * 2.9))
+            fall = fall * (1.0 + 0.55 * np.sin(self.phase2 + tw * self.freq * 2.9))
         vy = np.maximum(fall + wy * S["wind"] * (0.5 + d), 12.0 * S["fall"]) + self.vy_extra
-        sway = self.sway * S["sway"] * (np.sin(self.phase + self.t * self.freq)
-                                       + 0.45 * np.sin(self.phase2 + self.t * self.freq * 2.37))
+        sway = self.sway * S["sway"] * (np.sin(self.phase + tw * self.freq)
+                                       + 0.45 * np.sin(self.phase2 + tw * self.freq * 2.37))
         vx = wx * S["wind"] * (0.45 + 0.9 * d) + self.vx_extra + sway
         self.pang[:] = self.ang
         self.ang += self.spin * dt
@@ -1311,6 +1420,7 @@ class Sim:
         py = self.y.copy()
         self.x = np.where(a, self.x + vx * dt, self.x)
         self.y = np.where(a, self.y + vy * dt, self.y)
+        self.hand_off()
 
         # landing
         if time.monotonic() < self.land_block_until:
@@ -1589,6 +1699,8 @@ class Sim:
                 "ledge_snow": [round(float(p.h.sum()), 1) for p in self.ledges],
                 "corners": self.deco,
                 "bridge_pages": sorted(getattr(self, "pages", {}) or {}),
+                "handoff_waiting": {t: len(v) for t, v in self.handoff.items()},
+                "hand_stats": self.hand_stats,
                 "masks": getattr(self, "masks", []),
             })
         if c == "wind" and len(parts) == 3:
