@@ -59,10 +59,20 @@ jobs:
         run: |
           Start-Process notepad.exe
           Start-Sleep 3
-          $p = Start-Process -FilePath dist\seasoning.exe -ArgumentList "selftest","25" -PassThru -Wait
+          $p = Start-Process -FilePath dist\seasoning.exe -ArgumentList "selftest","25" -PassThru
+          # while the overlay runs: open the Tk control panel, talk to the overlay, screenshot
+          Start-Sleep 10
+          $env:SEASONING_PANEL_SELFTEST = "4"
+          $env:SEASONING_PANEL_SHOT = "$PWD\panel.png"
+          $q = Start-Process -FilePath dist\seasoning.exe -ArgumentList "panel" -PassThru -Wait
+          Remove-Item Env:SEASONING_PANEL_SELFTEST
+          $s = Start-Process -FilePath dist\seasoning.exe -ArgumentList "season","winter" -PassThru -Wait
+          $p.WaitForExit()
           Get-Content selftest.txt
           if ($p.ExitCode -ne 0) { exit $p.ExitCode }
           if (-not (Select-String -Path selftest.txt -Pattern "seasoning selftest:")) { exit 1 }
+          if (-not (Select-String -Path selftest.txt -Pattern "panel selftest: ok")) { exit 1 }
+          if (-not (Select-String -Path selftest.txt -Pattern "season winter")) { exit 1 }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -70,6 +80,7 @@ jobs:
           path: |
             dist/seasoning.exe
             selftest.png
+            panel.png
             selftest.txt
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')

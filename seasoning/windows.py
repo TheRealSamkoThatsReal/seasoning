@@ -416,7 +416,7 @@ def run_overlay(selftest=0.0):
 
     ipc = []
     serve(sim, lambda srv, on_ready: ipc.append(on_ready))
-    tray = None if selftest else start_tray(plat, sim)
+    tray = start_tray(plat, sim)
 
     sim.poll()
     plat.later(500, sim.watch_wallpaper)
@@ -592,4 +592,14 @@ def run_panel():
               activebackground="#22355a", activeforeground=FG,
               font=("Segoe UI", 9)).pack(fill="x", padx=16, pady=(6, 0))
     button(root, "Stop", lambda: (safe("quit"), root.destroy())).pack(fill="x", padx=16, pady=(6, 14))
+    auto = float(os.environ.get("SEASONING_PANEL_SELFTEST", "0") or 0)
+    if auto:                                         # CI: show the panel, grab the screen, close
+        def finish():
+            shot = os.environ.get("SEASONING_PANEL_SHOT")
+            if shot:
+                from PIL import ImageGrab
+                ImageGrab.grab().save(shot)
+            print("seasoning panel selftest: ok")
+            root.destroy()
+        root.after(int(auto * 1000), finish)
     root.mainloop()
