@@ -55,6 +55,7 @@ WS_EX_TOPMOST = 0x00000008
 SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, SWP_FRAMECHANGED = 0x2, 0x1, 0x10, 0x20
 HWND_TOPMOST = -1
 SPI_GETDESKWALLPAPER = 0x0073
+SPI_GETWORKAREA = 0x0030
 
 # shell surfaces that are not "windows" snow should sit on
 SKIP_CLASSES = {
@@ -200,8 +201,14 @@ class WinPlatform:
             pref = _dwm_int(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE) if self.win11 else None
             radius = 0.0 if (not self.win11 or zoomed or pref == 1) else (4.0 if pref == 3 else 8.0)
             wins.append({"addr": int(hwnd), "x": l, "y": t, "w": w, "h": h, "radius": radius})
+        # the bottom pile rests on the taskbar (top of it = bottom of the work area)
+        wa = wintypes.RECT()
+        floor_y = self.H
+        if user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(wa), 0) and 0 < wa.bottom < self.H:
+            floor_y = wa.bottom
         return {"origin": (0, 0), "size": (self.W, self.H), "refresh": self.refresh,
-                "ws": 0, "special": 0, "windows": wins, "alive": {int(a) for a in alive}, "hide": hide}
+                "ws": 0, "special": 0, "windows": wins, "alive": {int(a) for a in alive}, "hide": hide,
+                "floor_y": floor_y}
 
     def decoration(self):
         return (8.0 if self.win11 else 0.0, 2.0)

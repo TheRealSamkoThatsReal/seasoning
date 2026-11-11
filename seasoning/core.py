@@ -844,6 +844,8 @@ class Sim:
             return True
         self.mon = snap["origin"]
         self.W, self.H = snap["size"]
+        # where the bottom pile rests: the screen edge, or the top of a taskbar/dock
+        self.floor_y = float(snap.get("floor_y", self.H))
         self.refresh = snap.get("refresh", 60.0) or 60.0
         prev_ws, prev_sp = self.ws_active, self.ws_special
         self.ws_active, self.ws_special = snap.get("ws", 0), snap.get("special", 0)
@@ -1203,9 +1205,9 @@ class Sim:
             piles = [self.piles[k] for k in self.visible if k in self.piles]
         piles += self.ledges
         if state.get("floor", True):
-            if self.floor is None or self.floor.w != self.W or self.floor.top != self.H:
+            if self.floor is None or self.floor.w != self.W or self.floor.top != getattr(self, "floor_y", self.H):
                 n = int(self.W // COL)
-                self.floor = Pile(0, np.full(n, float(self.H)),
+                self.floor = Pile(0, np.full(n, getattr(self, "floor_y", float(self.H))),
                                   FLOOR_MAXH * max(self.S()["maxh"], 0.01), edge=99)
                 self.floor.kind = "floor"
             piles.append(self.floor)
