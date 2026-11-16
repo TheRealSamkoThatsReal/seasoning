@@ -460,7 +460,7 @@ def run_overlay(selftest=0.0):
             # pick it up / carry it / drop it with the left button
             c = plat.cursor()
             if c is not None:
-                over = sim.grabbed is not None or sim.ball_at(*c) is not None
+                over = sim.catches(*c)
                 if over != catching:
                     glfw.set_window_attrib(win, glfw.MOUSE_PASSTHROUGH, not over)
                     catching = over

@@ -32,11 +32,11 @@ Inspired by [Snowy](https://snowy.aauburn.com) by Archie, an open-source snow ap
 - **Snowballs and snowmen** (winter):
   - Sweep the cursor sideways through snow, slowly, to roll a snowball. It grows from the snow it picks up and leaves a track. A fast swipe just sprays the snow instead.
   - A rolling ball pushes other balls along, and one pushed off the end of a window or ledge falls.
-  - Grab a ball with the left mouse button to carry it, or flick it to throw it.
+  - Grab a ball with the left mouse button to carry it, or flick it to throw it. Clicking and dragging on snow scoops up a handful as a snowball in your hand.
   - Stack three balls and you get a snowman with a carrot nose and a red scarf.
   - A ball that lands hard bursts back into a heap of snow.
   - `seasoning snowman` drops one onto the top window.
-- **Leaf heaps** (fall, and petals in spring): push leaves sideways, slowly, to gather them into a heap. It grows as tall as you keep pushing; a fast swipe scatters them instead. On their own, leaves only build a thin layer.
+- **Leaf heaps** (fall, and petals in spring): push leaves sideways, slowly, to gather them into a heap. It grows as tall as you keep pushing; a fast swipe scatters them instead. On their own, leaves only build a thin layer. Click and drag on leaves to pick up a handful and drop or toss it somewhere else.
 - **Moving windows**: a window that moves, closes or leaves the screen drops its snow. On Hyprland, switching workspaces leaves the snow hanging in place while the window slides out from under it.
 - **Gets out of the way**: it hides itself while a game or video is fullscreen.
 

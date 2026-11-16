@@ -60,7 +60,8 @@ def season_now(when=None):
 
 # snowballs
 BALL_G = 1800.0            # px/s^2
-BALL_POOF_V = 650.0        # landing faster than this bursts a ball back into snow
+BALL_POOF_V = 1100.0       # landing faster than this bursts a ball back into snow (a drop from
+                           # ~1/3 of the screen survives; throws and long falls burst)
 BALL_MAX = 14
 BALL_R0 = 5.0              # a freshly started snowball
 BALL_R_MAX = 46.0
@@ -1027,6 +1028,10 @@ class Sim:
         self.balls = []              # snowballs (and the snowmen built from them)
         self.grabbed = None          # the ball held with the mouse
         self.input_sig = None
+        self.held_p = np.zeros(n, bool)    # leaves/petals held in a handful
+        self.hold_dx = np.zeros(n)
+        self.hold_dy = np.zeros(n)
+        self.clump = None            # the handful of leaves being carried
         self.alive = np.zeros(n, bool)
         self.vx_extra = np.zeros(n)
         self.vy_extra = np.zeros(n)
@@ -1203,7 +1208,7 @@ class Sim:
             return
         a = self.alive
         for title, mx, my, mw, mh, k in info:
-            inside = a & (self.x >= mx) & (self.x < mx + mw) & (self.y >= my) & (self.y < my + mh)
+            inside = a & ~self.held_p & (self.x >= mx) & (self.x < mx + mw) & (self.y >= my) & (self.y < my + mh)
             idx = np.nonzero(inside)[0]
             if not len(idx):
                 continue
@@ -1472,6 +1477,7 @@ class Sim:
             self.poll()
         self.release_step()
         self.ball_step(dt)
+        self.update_input()
         # sway runs on the wall clock (shared with the browser extension, so a particle
         # handed to a web page keeps its exact wobble)
         tw = time.time() % 86400.0
@@ -1492,6 +1498,13 @@ class Sim:
         py = self.y.copy()
         self.x = np.where(a, self.x + vx * dt, self.x)
         self.y = np.where(a, self.y + vy * dt, self.y)
+        if self.clump is not None:                 # a handful of leaves rides the cursor
+            h = self.held_p & a
+            cx, cy = self.clump["x"], self.clump["y"]
+            jig = np.sin(tw * 3.0 + self.phase[h]) * 1.5
+            self.x[h] = cx + self.hold_dx[h] + jig
+            self.y[h] = cy + self.hold_dy[h] + jig * 0.5
+            py[h] = self.y[h]
         self.hand_off()
 
         # landing
@@ -1507,7 +1520,7 @@ class Sim:
                                   FLOOR_MAXH * max(self.S()["maxh"], 0.01), edge=99)
                 self.floor.kind = "floor"
             piles.append(self.floor)
-        idx = np.nonzero(a & self.collide)[0]
+        idx = np.nonzero(a & self.collide & ~self.held_p)[0]
         if len(idx):
             X, Y, PY = self.x[idx], self.y[idx], py[idx]
             landed = np.zeros(len(idx), bool)
@@ -1556,7 +1569,7 @@ class Sim:
                 p.spill_x.clear()
 
         # cull
-        dead = a & ((self.y > self.H + 10) | (self.y < -300) | (self.x < -60) | (self.x > self.W + 60))
+        dead = a & ~self.held_p & ((self.y > self.H + 10) | (self.y < -300) | (self.x < -60) | (self.x > self.W + 60))
         self.alive &= ~dead
         # newborn flakes have no previous position: don't streak them across the screen
         new = self.alive & ~was
@@ -1646,6 +1659,8 @@ class Sim:
             k = np.minimum(f * 0.6, 1.0)
             self.vx_extra[i] += (tx - self.vx_extra[i]) * k
             self.vy_extra[i] += (ty - self.vy_extra[i]) * k
+        if self.grabbed is not None or self.clump is not None:
+            return                                 # carrying something: just carry it
         # winter: sweeping sideways through snow rolls a snowball
         if self.S()["balls"] and self.push_speed < PUSH_FAST and self.roll(prev + CURSOR_BODY, pos + CURSOR_BODY):
             return
@@ -1860,7 +1875,6 @@ class Sim:
             keep.append(b)
         self.balls = keep
         self.assign_roles()
-        self.update_input()
 
     def above(self, b):
         return next((o for o in self.balls if o.below is b), None)
@@ -1909,10 +1923,39 @@ class Sim:
                 return b
         return None
 
+    def pile_at(self, x, y):
+        """The pile (and column) with grabbable snow/leaves at (x, y): the deepest spot
+        within a few px, since the clickable region bridges small thin gaps."""
+        need = self.grab_depth()
+        best = None
+        for p in self.surfaces():
+            c0 = int(np.floor((x - p.x0) / COL))
+            for c in range(c0 - 3, c0 + 4):
+                if c < 0 or c >= p.n or p.covered[c] or p.h[c] < need:
+                    continue
+                if not (p.base[c] - p.h[c] - 6 <= y <= p.base[c] + 2):
+                    continue
+                if best is None or p.h[c] > best[0].h[best[1]]:
+                    best = (p, c)
+        return best
+
+    def grab_depth(self):
+        """How deep a pile must be to grab from (leaf litter is naturally thin)."""
+        return 2.0 if self.S()["heap"] else 3.0
+
+    def catches(self, x, y):
+        """Would a click here grab something? (Windows decides click-through with this.)"""
+        if self.grabbed is not None or self.clump is not None:
+            return True
+        if self.ball_at(x, y) is not None:
+            return True
+        return self.S()["maxh"] > 0 and self.pile_at(x, y) is not None
+
     def grab_at(self, x, y):
+        """Left button down at (x, y): pick up a snowball, or a handful from a pile."""
         b = self.ball_at(x, y)
         if b is None:
-            return False
+            return self.grab_pile(x, y)
         b.held, b.rest, b.below = True, False, None
         b.hx, b.hy = x - b.x, y - b.y
         b.vx = b.vy = 0.0
@@ -1920,18 +1963,89 @@ class Sim:
         self.grabbed = b
         return True
 
+    def grab_pile(self, x, y):
+        hit = self.pile_at(x, y)
+        if hit is None:
+            return False
+        p, c = hit
+        S = self.S()
+        if S["balls"]:
+            # snow: a scooped handful packs straight into a snowball in your hand
+            mass = self.scoop(p, x, 14.0, 0.85)
+            if mass < 4:
+                return False
+            b = Ball(x, y, BALL_R0)
+            self.grow(b, mass)
+            b.held, b.hx, b.hy, b.t_move = True, 0.0, 0.0, time.monotonic()
+            self.balls.append(b)
+            self.grabbed = b
+            return True
+        if not S["heap"]:
+            return False
+        # leaves / petals: a loose handful that rides along with the cursor
+        mass = self.scoop(p, x, 16.0, 0.9)
+        unit = 2.4 * 4.0 * S["mass"]             # what one landed leaf adds back to a pile
+        n = int(min(40, mass // unit))
+        free = np.nonzero(~self.alive)[0][:n]
+        n = len(free)
+        if n == 0:
+            p.deposit(np.array([c]), np.array([mass]), loose=False)   # put it back
+            return False
+        rest = mass - n * unit
+        if rest > 0:
+            p.deposit(np.array([c]), np.array([rest]), loose=False)
+        ang = rng.uniform(0, 2 * math.pi, n)
+        rad = 9.0 * np.sqrt(rng.uniform(0, 1, n))
+        self.hold_dx[free] = np.cos(ang) * rad
+        self.hold_dy[free] = np.sin(ang) * rad * 0.7
+        self.x[free] = self.px[free] = x + self.hold_dx[free]
+        self.y[free] = self.py[free] = y + self.hold_dy[free]
+        self.depth[free] = rng.uniform(0.75, 1.0, n)
+        self.style(free)
+        self.collide[free] = True
+        self.sticky[free] = True
+        self.origin[free] = -1
+        self.vx_extra[free] = 0.0
+        self.vy_extra[free] = 0.0
+        self.held_p[free] = True
+        self.alive[free] = True
+        self.clump = {"x": float(x), "y": float(y), "vx": 0.0, "vy": 0.0, "t": time.monotonic()}
+        return True
+
     def grab_move(self, x, y):
+        now = time.monotonic()
+        if self.clump is not None:
+            k = self.clump
+            if abs(x - k["x"]) < 0.5 and abs(y - k["y"]) < 0.5:
+                return                     # no movement (e.g. the drag-end report): not a throw
+            dt = max(now - k["t"], 1e-3)
+            k["vx"] = 0.6 * k["vx"] + 0.4 * (x - k["x"]) / dt
+            k["vy"] = 0.6 * k["vy"] + 0.4 * (y - k["y"]) / dt
+            k["x"], k["y"], k["t"] = float(x), float(y), now
+            return
         b = self.grabbed
         if b is None:
             return
-        now = time.monotonic()
-        dt = max(now - b.t_move, 1e-3)
         nx, ny = x - b.hx, y - b.hy
+        if abs(nx - b.x) < 0.5 and abs(ny - b.y) < 0.5:
+            return                         # no movement (e.g. the drag-end report): not a throw
+        dt = max(now - b.t_move, 1e-3)
         b.vx = 0.6 * b.vx + 0.4 * (nx - b.x) / dt
         b.vy = 0.6 * b.vy + 0.4 * (ny - b.y) / dt
         b.x, b.y, b.t_move = nx, ny, now
 
     def release(self):
+        if self.clump is not None:                 # let go of the leaves: they scatter and fall
+            k, self.clump = self.clump, None
+            h = self.held_p & self.alive
+            still = time.monotonic() - k["t"] > 0.12
+            vx = 0.0 if still else max(-1200.0, min(1200.0, k["vx"]))
+            vy = 0.0 if still else max(-1200.0, min(1200.0, k["vy"]))
+            m = int(h.sum())
+            self.vx_extra[h] = vx * rng.uniform(0.6, 1.0, m) + rng.normal(0, 25, m)
+            self.vy_extra[h] = vy * rng.uniform(0.6, 1.0, m) - rng.uniform(0, 40, m)
+            self.held_p[:] = False
+            return
         b = self.grabbed
         if b is None:
             return
@@ -1943,10 +2057,30 @@ class Sim:
         b.vy = max(-1500.0, min(1500.0, b.vy))
 
     def update_input(self):
-        """Tell the platform where the overlay should catch clicks (only on the balls)."""
-        rects = tuple((int(b.x - b.r - 4) // 4 * 4, int(b.y - b.r - 4) // 4 * 4,
-                       int(2 * b.r + 12) // 4 * 4, int(2 * b.r + 12) // 4 * 4)
-                      for b in self.balls if not b.held)
+        """Tell the platform where the overlay catches clicks: snowballs, and snow or
+        leaves deep enough to grab. Everything else stays click-through."""
+        rects = [(int(b.x - b.r - 4) // 4 * 4, int(b.y - b.r - 4) // 4 * 4,
+                  int(2 * b.r + 12) // 4 * 4, int(2 * b.r + 12) // 4 * 4)
+                 for b in self.balls if not b.held]
+        if self.S()["maxh"] > 0:
+            for p in self.surfaces():
+                deep = (p.h >= self.grab_depth()) & ~p.covered
+                if not deep.any():
+                    continue
+                cols = np.nonzero(deep)[0]
+                # runs of grabbable columns (small gaps bridged so the region stays simple)
+                breaks = np.nonzero(np.diff(cols) > 4)[0]
+                starts = np.r_[cols[0], cols[breaks + 1]]
+                ends = np.r_[cols[breaks], cols[-1]] + 1
+                for c0, c1 in zip(starts, ends):
+                    top = float((p.base[c0:c1] - p.h[c0:c1]).min()) - 3
+                    bot = float(p.base[c0:c1].max())
+                    x0 = int(p.x0 + c0 * COL) // 8 * 8
+                    rects.append((x0, int(top) // 4 * 4, (int(p.x0 + c1 * COL) - x0 + 7) // 8 * 8,
+                                  max(4, (int(bot) - int(top) // 4 * 4) // 4 * 4)))
+                if len(rects) > 96:
+                    break
+        rects = tuple(rects[:96])
         if rects != self.input_sig and hasattr(self.plat, "set_input_rects"):
             self.input_sig = rects
             self.plat.set_input_rects(rects)
@@ -2044,6 +2178,8 @@ class Sim:
                 "bridge_pages": sorted(getattr(self, "pages", {}) or {}),
                 "handoff_waiting": {t: len(v) for t, v in self.handoff.items()},
                 "hand_stats": self.hand_stats,
+                "held_particles": int((self.held_p & self.alive).sum()),
+                "input_rects": list(self.input_sig or ()),
                 "balls": [{"x": round(b.x), "y": round(b.y), "r": round(b.r, 1), "rest": b.rest,
                            "held": b.held, "role": b.role, "on_ball": b.below is not None} for b in self.balls],
                 "masks": getattr(self, "masks", []),

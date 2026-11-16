@@ -234,6 +234,9 @@ def test_particles_hand_off_to_page_and_back():
 
 
 # ── snowballs ─────────────────────────────────────────────────────────────
+BALL_R0_T = core.BALL_R0
+
+
 def snowy_window_sim(**kw):
     """Winter, one window, a full pile on its top edge, no snowfall."""
     sim = make_sim(windows=[{"addr": "A", "x": 300, "y": 400, "w": 800, "h": 500}],
@@ -341,3 +344,70 @@ def test_fast_swipe_neither_balls_nor_heaps():
     for _ in range(4):
         sweep(sim, 320, 1000, 400 - 8, steps=14)   # fast swipes through the litter
     assert p.h.max() <= natural + 1.0, (p.h.max(), natural)
+
+
+def test_grab_snow_from_a_pile_makes_a_snowball_in_hand():
+    sim, p = snowy_window_sim()
+    before = p.h.sum()
+    x, y = 700.0, 400 - 6                           # clicking into the snow on the window top
+    assert sim.catches(x, y)
+    assert sim.grab_at(x, y)
+    b = sim.grabbed
+    assert b is not None and b.held and b.r > BALL_R0_T
+    assert abs((before - p.h.sum()) - b.mass) < 1e-6 * before + 1e-3     # taken from the pile
+    sim.grab_move(x + 200, y - 120)
+    sim.step(1 / 36)
+    assert abs(b.x - (x + 200)) < 1 and abs(b.y - (y - 120)) < 1
+    import time as _t
+    _t.sleep(0.15)
+    sim.release()
+    for _ in range(36 * 2):
+        sim.step(1 / 36)
+    assert b.rest                                    # dropped back onto the window's snow
+
+
+def test_grab_leaves_carries_a_handful_that_falls_when_released():
+    sim = make_sim(windows=[{"addr": "A", "x": 300, "y": 400, "w": 800, "h": 500}],
+                   state={"season": "fall", "intensity": 0.0})
+    p = sim.piles["A"]
+    p.h[:] = 8.0
+    total = p.h.sum()
+    assert sim.grab_at(700.0, 400 - 4)
+    held = sim.held_p & sim.alive
+    assert held.sum() >= 3
+    sim.grab_move(1000.0, 150.0)
+    for _ in range(10):
+        sim.step(1 / 36)
+    assert np.all(np.abs(sim.x[held] - 1000) < 20) and np.all(np.abs(sim.y[held] - 150) < 20)
+    sim.release()
+    assert not sim.held_p.any()
+    for _ in range(36 * 12):
+        sim.step(1 / 36)
+    # (most of) the handful landed again somewhere: on this window or the bottom of the screen
+    back = p.h.sum() + (sim.floor.h.sum() if sim.floor is not None else 0)
+    assert back > 0.85 * total, (back, total)
+
+
+def test_nothing_to_grab_on_bare_window_or_empty_space():
+    sim, p = snowy_window_sim()
+    assert not sim.catches(305.0, 400 - 2)          # bare corner
+    assert not sim.catches(700.0, 200.0)            # empty air
+    assert not sim.grab_at(700.0, 200.0)
+
+
+def test_holding_still_then_letting_go_drops_straight_down():
+    """The drag-end report repeats the last position; it must not count as a throw."""
+    import time as _t
+    sim, p = snowy_window_sim()
+    assert sim.grab_at(700.0, 400 - 6)
+    b = sim.grabbed
+    for i in range(6):                             # carry it quickly to the right...
+        sim.grab_move(700.0 + 40 * i, 300.0)
+        _t.sleep(0.01)
+    _t.sleep(0.2)                                  # ...hold still...
+    sim.grab_move(900.0, 300.0)                    # ...the drag-end report (same spot)
+    sim.release()
+    x0 = b.x
+    for _ in range(36 * 2):
+        sim.step(1 / 36)
+    assert abs(b.x - x0) < 2 and b.rest
