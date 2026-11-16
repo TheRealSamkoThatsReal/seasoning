@@ -34,13 +34,13 @@ SPILL_UNIT = 10.0         # pile volume that becomes one loose flake (≈ one la
 # to a pile, maxh scales pile caps (0 = nothing piles up), shape picks the sprite.
 SEASONS = {
     "winter": dict(fall=1.0, sway=1.0, wind=1.0, size=1.0, count=1.0, mass=1.0, maxh=1.0,
-                   shape=0, spin=0.0),
+                   shape=0, spin=0.0, cohesion=4.0, heap=False, balls=True),
     "fall":   dict(fall=0.55, sway=3.2, wind=1.5, size=3.0, count=0.5, mass=0.45, maxh=0.55,
-                   shape=1, spin=2.6),
+                   shape=1, spin=2.6, cohesion=1.5, heap=True, balls=False),
     "spring": dict(fall=0.42, sway=2.6, wind=1.3, size=1.5, count=0.7, mass=0.35, maxh=0.3,
-                   shape=2, spin=2.0),
+                   shape=2, spin=2.0, cohesion=1.4, heap=True, balls=False),
     "summer": dict(fall=0.16, sway=2.2, wind=1.2, size=2.4, count=0.3, mass=0.0, maxh=0.0,
-                   shape=3, spin=0.6),
+                   shape=3, spin=0.6, cohesion=4.0, heap=False, balls=False),
 }
 SEASON_COLORS = {          # particle palettes (rgb)
     "winter": [(1.0, 1.0, 1.0)],
@@ -57,6 +57,14 @@ def season_now(when=None):
     return {12: "winter", 1: "winter", 2: "winter", 3: "spring", 4: "spring", 5: "spring",
             6: "summer", 7: "summer", 8: "summer"}.get(m, "fall")
 
+
+# snowballs
+BALL_G = 1800.0            # px/s^2
+BALL_POOF_V = 650.0        # landing faster than this bursts a ball back into snow
+BALL_MAX = 14
+BALL_R0 = 5.0              # a freshly started snowball
+BALL_R_MAX = 46.0
+BALL_STACK = 0.8           # how far a stacked ball sinks into the one below (x its radius)
 
 CURSOR_R = 70.0            # px: how far the cursor's wake reaches into falling snow
 PLOW_R = 11.0              # px: half-width of the groove the cursor cuts through piles
@@ -508,6 +516,37 @@ void main() {
         if (fc.x >= m.x && fc.x < m.x + m.z && fc.y >= m.y && fc.y < m.y + m.w) discard;
     }
     vec2 q = gl_PointCoord - vec2(0.5);
+    if (v_shape >= 4) {                                   // snowballs / snowman parts
+        const float R = 0.87;                            // ball edge inside the sprite
+        vec2 n2 = q * 2.0 / R;                           // -1..1 across the ball, +y down
+        float d2 = dot(n2, n2);
+        float a = 1.0 - smoothstep(0.92, 1.0, d2);
+        if (a <= 0.0) discard;
+        vec3 nrm = normalize(vec3(n2.x, -n2.y, sqrt(max(0.0, 1.0 - d2))));
+        float lit = 0.62 + 0.38 * max(dot(nrm, normalize(vec3(-0.45, 0.55, 0.7))), 0.0);
+        vec3 c = mix(vec3(0.70, 0.78, 0.92), vec3(1.0), lit);           // bluish shade underneath
+        float grain = fract(sin(dot(floor(gl_PointCoord * 40.0), vec2(12.9898, 78.233))) * 43758.5453);
+        c *= 0.96 + 0.06 * grain;                                         // packed-snow sparkle
+        if (v_shape == 5) {                                               // head: eyes, carrot, smile
+            float eyes = min(length(n2 - vec2(-0.32, -0.22)), length(n2 - vec2(0.32, -0.22)));
+            c = mix(c, vec3(0.08, 0.08, 0.1), 1.0 - smoothstep(0.09, 0.13, eyes));
+            float nose = step(0.0, n2.x) * step(n2.x, 0.62) * step(abs(n2.y - 0.05), 0.11 * (1.0 - n2.x / 0.62));
+            c = mix(c, vec3(0.95, 0.47, 0.12), nose);
+            for (int i = 0; i < 5; i++) {
+                float t = float(i) / 4.0 - 0.5;
+                vec2 sp = vec2(t * 0.7, 0.42 + 0.18 * (1.0 - 4.0 * t * t));
+                c = mix(c, vec3(0.08, 0.08, 0.1), 1.0 - smoothstep(0.05, 0.08, length(n2 - sp)));
+            }
+        } else if (v_shape == 6) {                                        // body: scarf + buttons
+            float scarf = step(-0.98, n2.y) * step(n2.y, -0.62);
+            float tail = step(0.18, n2.x) * step(n2.x, 0.46) * step(-0.7, n2.y) * step(n2.y, -0.05);
+            c = mix(c, vec3(0.82, 0.12, 0.13) * (0.8 + 0.25 * lit), max(scarf, tail));
+            float btn = min(length(n2 - vec2(-0.05, -0.12)), length(n2 - vec2(-0.05, 0.3)));
+            c = mix(c, vec3(0.1, 0.1, 0.12), 1.0 - smoothstep(0.08, 0.12, btn));
+        }
+        o = vec4(c * a, a);
+        return;
+    }
     if (v_shape == 0) {                                   // snowflake: soft disc
         float r = length(q) * 2.0;
         float a = v_a * (1.0 - smoothstep(0.45, 1.0, r)) * mix(1.0, 0.92, smoothstep(0.0, 0.45, r));
@@ -746,19 +785,22 @@ class Pile:
         self.covered = cov
 
     def deposit(self, cols, amounts, loose=True):
-        # little gaussian bump per flake
+        # Natural snowfall stops at the pile's cap; packed material that's pushed or
+        # dropped here (plowed heaps, burst snowballs) can build up as high as it goes.
         for off, k in ((-1, 0.25), (0, 0.5), (1, 0.25)):
             c = cols + off
             ok = (c >= 0) & (c < self.n)
-            np.add.at(self.h, c[ok], amounts[ok] * k)
+            cc = c[ok]
+            before = self.h[cc].copy()
+            np.add.at(self.h, cc, amounts[ok] * k)
             if loose:                      # pushed/plowed snow is packed, not loose
-                self.fresh[c[ok]] = 0.8
+                self.fresh[cc] = 0.8
+                self.h[cc] = np.minimum(self.h[cc], np.maximum(self.cap[cc], before))
             self._spill(float((amounts[(c < 0)] * k).sum()), -1)
             self._spill(float((amounts[(c >= self.n)] * k).sum()), 1)
-        np.minimum(self.h, self.cap, out=self.h)
         self.dirty = True
 
-    def settle(self, dt, wind_x):
+    def settle(self, dt, wind_x, cohesion=COHESION):
         h = self.h
         if h.max() <= 0.01:
             return
@@ -779,7 +821,7 @@ class Pile:
         # loose (freshly landed) snow slumps to the repose angle; settled
         # snow is cohesive and holds much steeper walls
         loose = self.fresh > 0
-        R = np.where(loose[1:] | loose[:-1], self.repose, COHESION)
+        R = np.where(loose[1:] | loose[:-1], self.repose, cohesion)
         self.fresh = np.maximum(self.fresh - dt, 0)
         for _ in range(8):
             e = h - self.base                  # bigger = higher on screen
@@ -796,7 +838,7 @@ class Pile:
             fr[:-1] = np.where(f_l > 0, np.maximum(fr[:-1], fr[1:]), fr[:-1])
             fr[1:] = np.where(f_r > 0, np.maximum(fr[1:], fr[:-1]), fr[1:])
             loose = fr > 0
-            R = np.where(loose[1:] | loose[:-1], self.repose, COHESION)
+            R = np.where(loose[1:] | loose[:-1], self.repose, cohesion)
             if h[0] > self.edge:
                 x = (h[0] - self.edge) * 0.3
                 h[0] -= x
@@ -805,9 +847,9 @@ class Pile:
                 x = (h[-1] - self.edge) * 0.3
                 h[-1] -= x
                 self._spill(x, 1)
-        over = np.maximum(h - self.cap, 0)
-        if over.any():
-            h -= over
+        # No trimming to the cap here: falling snow already stops landing at the cap and
+        # fresh landings are clamped in deposit(), while pushed heaps must keep every bit
+        # (trimming "loose" columns shaved heaps back down and destroyed the material).
         if np.abs(h - before).max() > 0.03:
             self.dirty = True
 
@@ -900,6 +942,26 @@ def corner_base(top, n, radius, power):
     drop = radius * (1 - (1 - t ** power) ** (1 / power))
     return top + drop
 
+class Ball:
+    """A snowball: rolled up from a pile, carried with the mouse, stacked into snowmen."""
+    __slots__ = ("x", "y", "px", "py", "r", "mass", "vx", "vy", "rest", "held", "below", "ox",
+                 "role", "hx", "hy", "t_move")
+
+    def __init__(self, x, y, r):
+        self.x = self.px = float(x)
+        self.y = self.py = float(y)
+        self.r = float(r)
+        self.mass = 0.0
+        self.vx = self.vy = 0.0
+        self.rest = False
+        self.held = False
+        self.below = None
+        self.ox = 0.0
+        self.role = "ball"
+        self.hx = self.hy = 0.0
+        self.t_move = 0.0
+
+
 class Sim:
     def __init__(self, plat):
         self.plat = plat
@@ -958,6 +1020,9 @@ class Sim:
         self.hand_lock = threading.Lock()
         self.mask_info = []
         self.hand_stats = {"out": 0, "back": 0}
+        self.balls = []              # snowballs (and the snowmen built from them)
+        self.grabbed = None          # the ball held with the mouse
+        self.input_sig = None
         self.alive = np.zeros(n, bool)
         self.vx_extra = np.zeros(n)
         self.vy_extra = np.zeros(n)
@@ -1255,6 +1320,8 @@ class Sim:
         if name == self.season:
             return
         self.season = name
+        self.balls = []
+        self.grabbed = None
         for p in list(self.piles.values()) + self.ledges + ([self.floor] if self.floor else []):
             p.h[:] = 0
             p.dirty = True
@@ -1400,6 +1467,7 @@ class Sim:
         if ws is not None and ws != self.ws_active:
             self.poll()
         self.release_step()
+        self.ball_step(dt)
         # sway runs on the wall clock (shared with the browser extension, so a particle
         # handed to a web page keeps its exact wobble)
         tw = time.time() % 86400.0
@@ -1472,7 +1540,7 @@ class Sim:
         budget = max(0, int(target * 1.25) - int(self.alive.sum()))
         for i, p in enumerate(piles):
             if (i + self.frame) % 4 == 0:          # each pile settles at 15 Hz, staggered
-                p.settle(dt * 4, wx)
+                p.settle(dt * 4, wx, S["cohesion"])
                 if self.paused:
                     p.melt(0.2)
                 elif p is self.floor:
@@ -1504,6 +1572,8 @@ class Sim:
         arr[:, 9] = S["shape"]
         arr[:, 10] = self.pang[idx]
         arr[:, 11] = self.ang[idx]
+        if self.balls:
+            arr = np.concatenate([arr, self.ball_rows()])
         self.flake_arr = arr
         self.pile_check = True
         return True
@@ -1569,6 +1639,9 @@ class Sim:
             k = np.minimum(f * 0.6, 1.0)
             self.vx_extra[i] += (tx - self.vx_extra[i]) * k
             self.vy_extra[i] += (ty - self.vy_extra[i]) * k
+        # winter: sweeping sideways through snow rolls a snowball
+        if self.S()["balls"] and self.roll(prev + CURSOR_BODY, pos + CURSOR_BODY):
+            return
         # piles: carve a groove along the cursor's path, shove the snow ahead
         # of it and kick some up as loose flakes
         steps = max(1, int(np.hypot(*(pos - prev)) // 6))
@@ -1605,8 +1678,11 @@ class Sim:
         vx, vy = self.cur_v
         sp = np.hypot(vx, vy) + 1e-3
         horiz = abs(vx) / sp
-        # most of it is shoved ahead (horizontal moves), the rest flies
-        shove = m * 0.65 * horiz
+        # most of it is shoved ahead (horizontal moves), the rest flies; leaves and
+        # petals mostly bulldoze into a heap that grows as long as you keep pushing
+        # (the heap is re-scooped every few pixels while you push, so even a few percent
+        # flying off each time would melt it away over a long sweep)
+        shove = m * (0.995 if self.S()["heap"] else 0.65) * horiz
         if shove > 0:
             side = 1 if vx > 0 else -1
             ahead = int(round((cx + side * (PLOW_R + 4) - p.x0) / COL))
@@ -1629,6 +1705,265 @@ class Sim:
             self.vx_extra[free] = vx * rng.uniform(0.3, 0.8, k) + rng.normal(0, 30, k)
             self.vy_extra[free] = -abs(vy) * 0.3 - rng.uniform(60, 160, k)
             self.alive[free] = True
+
+    # ── snowballs ─────────────────────────────────────────────────────────
+    def surface_under(self, x, yb):
+        """Highest surface at x that is at or below y=yb: (y, pile, column) or None."""
+        best = None
+        if time.monotonic() >= self.land_block_until:
+            piles = self.surfaces()
+        else:                                          # windows still sliding in
+            piles = self.ledges + ([self.floor] if self.floor is not None else [])
+        for p in piles:
+            c = int(np.floor((x - p.x0) / COL))
+            if c < 0 or c >= p.n or p.covered[c]:
+                continue
+            sy = float(p.base[c] - p.h[c])
+            if sy >= yb - 3 and (best is None or sy < best[0]):
+                best = (sy, p, c)
+        return best
+
+    def scoop(self, p, cx, half, frac):
+        """Take snow from the columns under a ball; returns the amount (pile units)."""
+        c0 = max(0, int((cx - half - p.x0) // COL))
+        c1 = min(p.n, int((cx + half - p.x0) // COL) + 1)
+        if c1 <= c0:
+            return 0.0
+        take = p.h[c0:c1] * frac
+        p.h[c0:c1] -= take
+        p.fresh[c0:c1] = 0.0
+        p.dirty = True
+        return float(take.sum())
+
+    def grow(self, b, mass):
+        """Snow is conserved: a ball's area is the snow it rolled up."""
+        b.mass += mass
+        b.r = min(BALL_R_MAX, math.sqrt(BALL_R0 ** 2 + b.mass * COL / math.pi))
+
+    def roll(self, p0, p1):
+        """A sideways sweep from p0 to p1 (the arrow's body): push or start a snowball."""
+        dx = p1[0] - p0[0]
+        if abs(dx) < 1 or abs(dx) < 1.2 * abs(p1[1] - p0[1]):
+            return False
+        side = 1 if dx > 0 else -1
+        for b in sorted(self.balls, key=lambda b: side * b.x):
+            if b.held or not b.rest or b.below is not None:
+                continue
+            if abs(p1[1] - b.y) > b.r + 10:
+                continue
+            front = b.x - side * (b.r + 4)            # where the cursor meets the ball
+            if side * (p1[0] - front) >= 0 and side * (p0[0] - b.x) <= 0:
+                self.roll_ball(b, p1[0] + side * (b.r + 4), side)
+                return True
+        if len(self.balls) >= BALL_MAX:
+            return False
+        hit = self.surface_under(p1[0], p1[1] - 40)
+        if hit is None:
+            return False
+        sy, p, c = hit
+        if p.h[c] < 3 or not (sy - 2 <= p1[1] <= p.base[c] + 4):
+            return False                              # not sweeping through real snow
+        b = Ball(p1[0] + side * (BALL_R0 + 4), sy - BALL_R0, BALL_R0)
+        self.grow(b, self.scoop(p, b.x, BALL_R0, 0.6))
+        under = self.surface_under(b.x, sy - 20)
+        b.y = (under[0] if under else sy) - b.r
+        b.rest = True
+        self.balls.append(b)
+        return True
+
+    def roll_ball(self, b, nx, side, depth=0):
+        """Roll a resting ball to nx along whatever it's sitting on, picking up snow."""
+        steps = max(1, int(abs(nx - b.x) // COL))
+        x0 = b.x
+        for k in range(1, steps + 1):
+            x = x0 + (nx - x0) * k / steps
+            hit = self.surface_under(x, b.y + b.r - 6)
+            if hit is None or hit[0] > b.y + b.r + 6:
+                # rolled off the end of the window / ledge: over the edge it goes
+                b.x, b.rest = x, False
+                b.vx, b.vy = side * 120.0, 0.0
+                return
+            sy, p, c = hit
+            self.grow(b, self.scoop(p, x, b.r * 0.4, 0.5))
+            b.x = x
+            under = self.surface_under(x, b.y + b.r - 6)
+            b.y = (under[0] if under else sy) - b.r
+            if depth > 3:
+                continue
+            for o in self.balls:                      # shove whatever is in the way
+                if o is b or o.held or not o.rest or o.below is not None:
+                    continue
+                if abs(o.y - b.y) < (o.r + b.r) and 0 <= side * (o.x - b.x) < o.r + b.r:
+                    self.roll_ball(o, b.x + side * (b.r + o.r), side, depth + 1)
+
+    def ball_step(self, dt):
+        if not self.balls:
+            return
+        keep = []
+        for b in sorted(self.balls, key=lambda b: -b.y):       # bottom balls first
+            b.px, b.py = b.x, b.y
+            if b.held:
+                keep.append(b)
+                continue
+            lb = b.below
+            if lb is not None:
+                if lb not in self.balls or lb.held or not lb.rest:
+                    b.below, b.rest, b.vy = None, False, 0.0  # lost its footing
+                else:
+                    b.x = lb.x + b.ox
+                    b.y = lb.y - lb.r - b.r * BALL_STACK
+                    b.rest = True
+                    keep.append(b)
+                    continue
+            hit = self.surface_under(b.x, b.y + b.r)
+            if b.rest:
+                if hit is not None and hit[0] - (b.y + b.r) < 3:
+                    b.y = hit[0] - b.r                 # ride the snow as it grows/shrinks
+                    keep.append(b)
+                    continue
+                b.rest, b.vy = False, 0.0              # its window moved or went away
+            b.vy += BALL_G * dt
+            b.vx *= 0.995
+            nx, ny = b.x + b.vx * dt, b.y + b.vy * dt
+            landed = False
+            for o in self.balls:                       # onto another ball: stack
+                if o is b or o.held or not o.rest or self.above(o) is not None:
+                    continue
+                top = o.y - o.r
+                if abs(nx - o.x) < o.r * 0.75 and b.y + b.r <= top + 4 and ny + b.r >= top:
+                    b.below, b.ox, b.rest = o, max(-o.r * 0.2, min(o.r * 0.2, nx - o.x)), True
+                    b.vx = b.vy = 0.0
+                    b.x, b.y = o.x + b.ox, o.y - o.r - b.r * BALL_STACK
+                    landed = True
+                    break
+            if landed:
+                keep.append(b)
+                continue
+            if hit is not None and ny + b.r >= hit[0]:
+                if b.vy > BALL_POOF_V:
+                    self.poof(b, hit)
+                    continue
+                b.x, b.y, b.vx, b.vy, b.rest = nx, hit[0] - b.r, 0.0, 0.0, True
+                keep.append(b)
+                continue
+            b.x, b.y = nx, ny
+            if b.y - b.r > self.H + 40 or b.x < -100 or b.x > self.W + 100:
+                continue                               # gone off screen
+            keep.append(b)
+        self.balls = keep
+        self.assign_roles()
+        self.update_input()
+
+    def above(self, b):
+        return next((o for o in self.balls if o.below is b), None)
+
+    def assign_roles(self):
+        for b in self.balls:
+            b.role = "ball"
+        for b in self.balls:
+            if b.below is not None:
+                continue
+            chain = [b]
+            while len(chain) < 3:
+                up = self.above(chain[-1])
+                if up is None:
+                    break
+                chain.append(up)
+            if len(chain) == 3:                        # three high: it's a snowman
+                for o, role in zip(chain, ("base", "body", "head")):
+                    o.role = role
+
+    def poof(self, b, hit):
+        """A hard landing bursts the ball back into a heap of packed snow."""
+        sy, p, c = hit
+        span = max(3, int(b.r * 1.6 / COL))
+        cols = np.arange(c - span, c + span + 1)
+        w = 1.0 - np.abs(cols - c) / (span + 1)
+        p.deposit(cols, b.mass * w / w.sum(), loose=False)
+        free = np.nonzero(~self.alive)[0][:min(14, 3 + int(b.r))]
+        k = len(free)
+        if k:
+            self.x[free] = self.px[free] = b.x + rng.uniform(-b.r, b.r, k)
+            self.y[free] = self.py[free] = sy - rng.uniform(0, b.r, k)
+            self.depth[free] = rng.uniform(0.7, 1.0, k)
+            self.style(free)
+            self.collide[free] = True
+            self.sticky[free] = True
+            self.origin[free] = -1
+            self.vx_extra[free] = rng.normal(0, 90, k)
+            self.vy_extra[free] = -rng.uniform(80, 260, k)
+            self.alive[free] = True
+
+    # grabbing with the mouse (the platform layers call these)
+    def ball_at(self, x, y):
+        for b in sorted(self.balls, key=lambda b: b.y):         # topmost first
+            if (x - b.x) ** 2 + (y - b.y) ** 2 <= (b.r + 4) ** 2:
+                return b
+        return None
+
+    def grab_at(self, x, y):
+        b = self.ball_at(x, y)
+        if b is None:
+            return False
+        b.held, b.rest, b.below = True, False, None
+        b.hx, b.hy = x - b.x, y - b.y
+        b.vx = b.vy = 0.0
+        b.t_move = time.monotonic()
+        self.grabbed = b
+        return True
+
+    def grab_move(self, x, y):
+        b = self.grabbed
+        if b is None:
+            return
+        now = time.monotonic()
+        dt = max(now - b.t_move, 1e-3)
+        nx, ny = x - b.hx, y - b.hy
+        b.vx = 0.6 * b.vx + 0.4 * (nx - b.x) / dt
+        b.vy = 0.6 * b.vy + 0.4 * (ny - b.y) / dt
+        b.x, b.y, b.t_move = nx, ny, now
+
+    def release(self):
+        b = self.grabbed
+        if b is None:
+            return
+        self.grabbed = None
+        b.held = False
+        if time.monotonic() - b.t_move > 0.12:
+            b.vx = b.vy = 0.0                         # held still before letting go: just drop
+        b.vx = max(-1500.0, min(1500.0, b.vx))
+        b.vy = max(-1500.0, min(1500.0, b.vy))
+
+    def update_input(self):
+        """Tell the platform where the overlay should catch clicks (only on the balls)."""
+        rects = tuple((int(b.x - b.r - 4) // 4 * 4, int(b.y - b.r - 4) // 4 * 4,
+                       int(2 * b.r + 12) // 4 * 4, int(2 * b.r + 12) // 4 * 4)
+                      for b in self.balls if not b.held)
+        if rects != self.input_sig and hasattr(self.plat, "set_input_rects"):
+            self.input_sig = rects
+            self.plat.set_input_rects(rects)
+
+    def ball_rows(self):
+        """Render rows (same layout as flakes) for the snowballs."""
+        shape = {"ball": 4, "base": 4, "body": 6, "head": 5}
+        rows = np.zeros((len(self.balls), 12), np.float32)
+        for i, b in enumerate(self.balls):
+            rows[i] = (b.px, b.py, b.x, b.y, b.r * 2.3, 1.0, 1.0, 1.0, 1.0, shape[b.role], 0.0, 0.0)
+        return rows
+
+    def build_snowman(self):
+        """`seasoning snowman`: three balls dropped onto the top-most window."""
+        if not self.S()["balls"]:
+            return "snowmen need winter (seasoning season winter)"
+        if not self.visible or self.visible[0] not in self.piles:
+            return "no window to build on"
+        p = self.piles[self.visible[0]]
+        x = p.x0 + p.w * (0.25 + 0.5 * rng.random())
+        for r, dy in ((22.0, 0), (16.0, 90), (11.0, 180)):
+            b = Ball(x, p.top - 100 - dy, r)
+            b.mass = (r * r - BALL_R0 ** 2) * math.pi / COL
+            self.balls.append(b)
+        return "snowman incoming"
 
     def surfaces(self):
         out = [self.piles[k] for k in self.visible if k in self.piles] + self.ledges
@@ -1701,6 +2036,8 @@ class Sim:
                 "bridge_pages": sorted(getattr(self, "pages", {}) or {}),
                 "handoff_waiting": {t: len(v) for t, v in self.handoff.items()},
                 "hand_stats": self.hand_stats,
+                "balls": [{"x": round(b.x), "y": round(b.y), "r": round(b.r, 1), "rest": b.rest,
+                           "held": b.held, "role": b.role, "on_ball": b.below is not None} for b in self.balls],
                 "masks": getattr(self, "masks", []),
             })
         if c == "wind" and len(parts) == 3:
@@ -1727,7 +2064,11 @@ class Sim:
         elif c == "pause":
             self.paused = not self.paused
             return "paused" if self.paused else "snowing"
+        elif c == "snowman":
+            return self.build_snowman()
         elif c == "clear":
+            self.balls = []
+            self.grabbed = None
             for p in self.piles.values():
                 self.shake(p)
                 p.h[:] = 0

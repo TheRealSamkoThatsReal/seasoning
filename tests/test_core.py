@@ -228,3 +228,98 @@ def test_particles_hand_off_to_page_and_back():
         sim.handback.append(("Pg", back))
     sim.step(1 / 36)
     assert int(sim.alive.sum()) >= n0
+
+
+# ── snowballs ─────────────────────────────────────────────────────────────
+def snowy_window_sim(**kw):
+    """Winter, one window, a full pile on its top edge, no snowfall."""
+    sim = make_sim(windows=[{"addr": "A", "x": 300, "y": 400, "w": 800, "h": 500}],
+                   state={"season": "winter", "intensity": 0.0}, **kw)
+    p = sim.piles["A"]
+    p.h[:] = np.minimum(p.cap, 14.0)
+    p.h[:6] = p.h[-6:] = 0                     # bare corners
+    return sim, p
+
+
+def sweep(sim, x0, x1, y, steps=40):
+    for i in range(steps + 1):
+        sim.plat.cur = (x0 + (x1 - x0) * i / steps, y)
+        sim.step(1 / 36)
+
+
+def test_sideways_sweep_rolls_a_growing_snowball():
+    sim, p = snowy_window_sim()
+    before = p.h.sum()
+    sweep(sim, 420, 900, 400 - 14)             # arrow body sits in the snow
+    assert len(sim.balls) == 1
+    b = sim.balls[0]
+    assert b.rest and b.r > 10
+    taken = before - p.h.sum()
+    assert abs(taken - b.mass) < 1e-6 * max(1, taken) + 1e-3   # snow is conserved
+
+
+def test_ball_pushed_off_the_edge_falls():
+    sim, p = snowy_window_sim()
+    sweep(sim, 420, 1180, 400 - 14, steps=70)  # past the window's right end at x=1100
+    for _ in range(36 * 3):
+        sim.step(1 / 36)
+    assert all(b.y > 900 or not sim.balls for b in sim.balls)
+
+
+def test_snowman_command_stacks_three():
+    sim, p = snowy_window_sim()
+    assert sim.command("snowman") == "snowman incoming"
+    for _ in range(36 * 3):
+        sim.step(1 / 36)
+    roles = sorted(b.role for b in sim.balls)
+    assert roles == ["base", "body", "head"], roles
+    head = next(b for b in sim.balls if b.role == "head")
+    base = next(b for b in sim.balls if b.role == "base")
+    assert head.y < base.y
+
+
+def test_grab_and_drop_onto_a_ball_stacks_it():
+    sim, p = snowy_window_sim()
+    sim.command("snowman")
+    for _ in range(36 * 3):
+        sim.step(1 / 36)
+    head = next(b for b in sim.balls if b.role == "head")
+    assert sim.grab_at(head.x, head.y)
+    sim.grab_move(head.x + 300, head.y - 50)    # carry it off to the side
+    sim.step(1 / 36)
+    import time as _t
+    _t.sleep(0.15)                              # hold still, then let go: it just drops
+    sim.release()
+    for _ in range(36 * 2):
+        sim.step(1 / 36)
+    assert not any(b.role == "head" for b in sim.balls)       # no longer a snowman
+    moved = min(sim.balls, key=lambda b: abs(b.x - (head.x)))
+    assert moved.rest
+
+
+def test_balls_fall_when_their_window_goes_away():
+    sim, p = snowy_window_sim()
+    sim.command("snowman")
+    for _ in range(36 * 3):
+        sim.step(1 / 36)
+    floor_before = sim.floor.h.sum() if sim.floor is not None else 0
+    sim.plat.windows = []                      # window closed
+    for _ in range(36 * 3):
+        sim.step(1 / 36)
+        sim.poll()
+    assert all(b.y > 900 for b in sim.balls)   # landed at the bottom (or burst)
+    assert sim.floor.h.sum() >= floor_before
+
+
+def test_leaves_can_be_heaped_past_the_natural_height():
+    sim = make_sim(windows=[{"addr": "A", "x": 300, "y": 400, "w": 800, "h": 500}],
+                   state={"season": "fall", "intensity": 2.0})
+    run(sim, 30)
+    p = sim.piles["A"]
+    natural = float(p.cap.max())
+    assert p.h.max() <= natural + 0.5          # left alone, leaves stay low
+    core.state["intensity"] = 0.0
+    for _ in range(6):                         # bulldoze the litter toward the right end
+        sweep(sim, 320, 1000, 400 - 8, steps=50)
+    assert p.h.max() > natural * 1.8, (p.h.max(), natural)
+    assert not sim.balls                       # no snowballs from leaves

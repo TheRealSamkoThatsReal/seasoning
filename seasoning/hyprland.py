@@ -74,6 +74,8 @@ class HyprPlatform:
         self.GLib = GLib
         self.sock = hypr_sock()
         self.app = None
+        self.cairo = None
+        self.input_rects = ()
 
     def snapshot(self):
         try:
@@ -203,6 +205,16 @@ class HyprPlatform:
             m = pm[1:-1, 1:-1] | pm[:-2, 1:-1] | pm[2:, 1:-1] | pm[1:-1, :-2] | pm[1:-1, 2:]
         return m
 
+    def set_input_rects(self, rects):
+        """Catch clicks only on the snowballs; everywhere else stays click-through."""
+        self.input_rects = rects
+        surf = self.win.get_surface() if self.win is not None else None
+        if surf is None or self.cairo is None:
+            return
+        region = self.cairo.Region([self.cairo.RectangleInt(int(x), int(y), max(1, int(w)), max(1, int(h)))
+                                    for x, y, w, h in rects])
+        surf.set_input_region(region)
+
     def set_visible(self, v):
         if self.win is not None:
             self.win.set_visible(v)
@@ -264,12 +276,37 @@ def run_overlay():
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         plat = HyprPlatform(win, GLib)
+        plat.cairo = cairo
         plat.app = app
         sim = Sim(plat)
         area = Gtk.GLArea()
         area.set_has_depth_buffer(False)
         area.set_has_stencil_buffer(False)
-        area.set_can_target(False)
+        area.set_can_target(True)            # input region limits this to the snowballs
+
+        # pick up a snowball, carry it, let go (the compositor keeps the drag with us
+        # until the button is released, even outside the snowball's input rect)
+        drag = Gtk.GestureDrag()
+        drag.set_button(1)
+        start = [0.0, 0.0]
+
+        def drag_begin(g, x, y):
+            if not sim.grab_at(x, y):
+                g.set_state(Gtk.EventSequenceState.DENIED)
+                return
+            g.set_state(Gtk.EventSequenceState.CLAIMED)
+            start[:] = [x, y]
+
+        def drag_update(g, ox, oy):
+            sim.grab_move(start[0] + ox, start[1] + oy)
+
+        def drag_end(g, ox, oy):
+            sim.grab_move(start[0] + ox, start[1] + oy)
+            sim.release()
+        drag.connect("drag-begin", drag_begin)
+        drag.connect("drag-update", drag_update)
+        drag.connect("drag-end", drag_end)
+        area.add_controller(drag)
         win.set_child(area)
         frame = {"now": 0.0, "step_at": 0.0, "step_dt": 1.0 / PHYS_HZ, "tick": 0, "last": None,
                  "renders": 0}
@@ -305,7 +342,7 @@ def run_overlay():
         area.connect("render", on_gl_render)
 
         def on_realize(w):
-            w.get_surface().set_input_region(cairo.Region())   # click-through
+            plat.set_input_rects(plat.input_rects)   # click-through except on snowballs
         win.connect("realize", on_realize)
         win.present()
 

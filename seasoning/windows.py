@@ -32,6 +32,7 @@ if user32 is not None:
         ("GetWindowTextLengthW", I_, (H_,)), ("GetWindowTextW", I_, (H_, wintypes.LPWSTR, I_)),
         ("GetWindowRect", B_, (H_, ctypes.POINTER(wintypes.RECT))),
         ("GetCursorPos", B_, (ctypes.POINTER(wintypes.POINT),)),
+        ("GetAsyncKeyState", ctypes.c_short, (I_,)),
         ("SetWindowPos", B_, (H_, H_, I_, I_, I_, I_, wintypes.UINT)),
         ("SystemParametersInfoW", B_, (wintypes.UINT, wintypes.UINT, ctypes.c_void_p, wintypes.UINT)),
     ):
@@ -250,6 +251,9 @@ class WinPlatform:
         return m if m.any() else None
 
     # ---- window / loop plumbing -------------------------------------------
+    def set_input_rects(self, rects):
+        pass                          # Windows: click-through is toggled per frame instead
+
     def set_visible(self, v):
         if v == self.visible:
             return
@@ -436,6 +440,7 @@ def run_overlay(selftest=0.0):
     sim.poll()
     plat.later(500, sim.watch_wallpaper)
     t_poll = t_wall = time.monotonic()
+    catching = was_down = False
     last_step = step_at = time.monotonic()
     step_dt = 1.0 / PHYS_HZ
     started = time.monotonic()
@@ -451,6 +456,22 @@ def run_overlay(selftest=0.0):
                 t_wall = now
                 sim.watch_wallpaper()
             plat.run_timers()
+            # snowballs: stop being click-through while the cursor is over one, and
+            # pick it up / carry it / drop it with the left button
+            c = plat.cursor()
+            if c is not None:
+                over = sim.grabbed is not None or sim.ball_at(*c) is not None
+                if over != catching:
+                    glfw.set_window_attrib(win, glfw.MOUSE_PASSTHROUGH, not over)
+                    catching = over
+                down = bool(user32.GetAsyncKeyState(0x01) & 0x8000)
+                if down and not was_down and over and sim.grabbed is None:
+                    sim.grab_at(*c)
+                elif down and sim.grabbed is not None:
+                    sim.grab_move(*c)
+                elif not down and sim.grabbed is not None:
+                    sim.release()
+                was_down = down
             for on_ready in ipc:
                 for _ in range(4):                   # drain a few queued connections
                     on_ready()

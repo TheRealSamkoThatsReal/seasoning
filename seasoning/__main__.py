@@ -8,6 +8,7 @@
     seasoning wind DEG PCT    wind toward DEG (0=E, 90=down, 180=W), PCT 0-100
     seasoning intensity X     how much falls, 0.0-3.0 (1 = default)
     seasoning stick F         share of near flakes that land on windows, 0-1 (default 0.35)
+    seasoning snowman         drop a snowman onto the top window (winter)
     seasoning ledges          toggle piling on edges detected in the wallpaper
     seasoning ledges IMG|show [OUT.png]   preview the edges found in an image
     seasoning rescan          re-detect wallpaper edges

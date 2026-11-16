@@ -19,7 +19,7 @@ on the GPU, and uses a few percent of one CPU core. A **browser extension** (Chr
 Firefox and anything based on them, including **ChromeOS**) lets it land on the
 elements of web pages too.
 
-Inspired by [Snowy](https://snowy.aauburn.com) by Archie, an open-source snow app for macOS.
+Inspired by [Snowy](https://snowy.aauburn.com) by Archie, an open-source snow app for macOS. The snowballs were inspired by [WINTER_IS_COMING](https://github.com/yike-shi/WINTER_IS_COMING).
 
 ## Features
 
@@ -29,6 +29,14 @@ Inspired by [Snowy](https://snowy.aauburn.com) by Archie, an open-source snow ap
 - **Physics**: snow slumps to a natural angle, the wind drifts it along a pile and blows it off the ends, and settled snow keeps the shape you carve into it.
 - **Wind**: set direction and strength on a wind pad. It changes where snow lands and how piles drift.
 - **Cursor**: flakes swirl in the cursor's wake, and dragging through a pile plows it.
+- **Snowballs and snowmen** (winter):
+  - Sweep the cursor sideways through snow to roll a snowball. It grows from the snow it picks up and leaves a track.
+  - A rolling ball pushes other balls along, and one pushed off the end of a window or ledge falls.
+  - Grab a ball with the left mouse button to carry it, or flick it to throw it.
+  - Stack three balls and you get a snowman with a carrot nose and a red scarf.
+  - A ball that lands hard bursts back into a heap of snow.
+  - `seasoning snowman` drops one onto the top window.
+- **Leaf heaps** (fall, and petals in spring): sweep leaves sideways to push them into a heap. It grows as tall as you keep pushing; on their own, leaves only build a thin layer.
 - **Moving windows**: a window that moves, closes or leaves the screen drops its snow. On Hyprland, switching workspaces leaves the snow hanging in place while the window slides out from under it.
 - **Gets out of the way**: it hides itself while a game or video is fullscreen.
 
@@ -114,6 +122,7 @@ seasoning season winter|spring|summer|fall|auto
 seasoning wind 180 40        # blow toward 180° (west) at 40%
 seasoning intensity 1.5      # 0-3
 seasoning stick 0.35         # share of flakes that land on windows (the rest fall past)
+seasoning snowman            # drop a snowman onto the top window (winter)
 seasoning pause | clear | floor | ledges | rescan | quit | status
 seasoning ledges show        # save a picture of the edges found in your wallpaper
 ```
