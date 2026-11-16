@@ -66,6 +66,10 @@ BALL_R0 = 5.0              # a freshly started snowball
 BALL_R_MAX = 46.0
 BALL_STACK = 0.8           # how far a stacked ball sinks into the one below (x its radius)
 
+# pushing speed: a slow push rolls snowballs / heaps leaves; a fast swipe just sprays
+PUSH_SLOW = 600.0          # px/s: up to here, everything you push stays together
+PUSH_FAST = 1000.0         # px/s: from here on, nothing balls up or heaps up
+
 CURSOR_R = 70.0            # px: how far the cursor's wake reaches into falling snow
 PLOW_R = 11.0              # px: half-width of the groove the cursor cuts through piles
 CURSOR_BODY = (6.0, 16.0)  # arrow pointer: centre is ~6px right of the hotspot, body reaches ~16px below it
@@ -1620,6 +1624,9 @@ class Sim:
         self.cur_v = self.cur_v * 0.5 + v * 0.5
         prev, self.cur = self.cur, pos
         speed = float(np.hypot(*self.cur_v))
+        # push-vs-flick is decided on how fast the cursor is moving right now (the
+        # smoothed speed lags a frame, and that one frame used to start a snowball)
+        self.push_speed = max(float(np.hypot(*v)), speed)
         if speed < 25:
             return
         # falling flakes: dragged along by the cursor's wake and pushed aside
@@ -1640,7 +1647,7 @@ class Sim:
             self.vx_extra[i] += (tx - self.vx_extra[i]) * k
             self.vy_extra[i] += (ty - self.vy_extra[i]) * k
         # winter: sweeping sideways through snow rolls a snowball
-        if self.S()["balls"] and self.roll(prev + CURSOR_BODY, pos + CURSOR_BODY):
+        if self.S()["balls"] and self.push_speed < PUSH_FAST and self.roll(prev + CURSOR_BODY, pos + CURSOR_BODY):
             return
         # piles: carve a groove along the cursor's path, shove the snow ahead
         # of it and kick some up as loose flakes
@@ -1682,14 +1689,15 @@ class Sim:
         # petals mostly bulldoze into a heap that grows as long as you keep pushing
         # (the heap is re-scooped every few pixels while you push, so even a few percent
         # flying off each time would melt it away over a long sweep)
-        shove = m * (0.995 if self.S()["heap"] else 0.65) * horiz
+        fast = min(max((getattr(self, "push_speed", sp) - PUSH_SLOW) / (PUSH_FAST - PUSH_SLOW), 0.0), 1.0)
+        shove = m * (0.995 if self.S()["heap"] else 0.65) * horiz * (1.0 - fast)   # a fast swipe sprays it all
         if shove > 0:
             side = 1 if vx > 0 else -1
             ahead = int(round((cx + side * (PLOW_R + 4) - p.x0) / COL))
             cols = np.arange(ahead, ahead + side * 5, side)
             p.deposit(cols, np.full(5, shove / 5), loose=False)  # spills if it's off the end
         self.kick_acc = getattr(self, "kick_acc", 0.0) + (m - shove)
-        n = min(int(self.kick_acc / 6.5), 12)        # a flake re-deposits ~6.5 when it lands
+        n = min(int(self.kick_acc / 6.5), 40 if fast > 0.5 else 12)   # a flake re-deposits ~6.5 when it lands
         self.kick_acc -= n * 6.5
         free = np.nonzero(~self.alive)[0][:n]
         k = len(free)

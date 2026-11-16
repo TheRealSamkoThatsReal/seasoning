@@ -222,12 +222,15 @@ def test_particles_hand_off_to_page_and_back():
     p = got[-1]                                                  # (the first ones are the initial fill)
     assert {"x", "y", "d", "r", "ph", "fr", "sw", "ang", "col"} <= set(p)
     assert -1 <= p["y"] <= 40                                    # handed over right at the page's top
-    n0 = int(sim.alive.sum())
+    returned = sim.hand_stats["back"]
     back = dict(p, x=-5.0, y=200.0)                              # left the page through its left side
     with sim.hand_lock:
         sim.handback.append(("Pg", back))
     sim.step(1 / 36)
-    assert int(sim.alive.sum()) >= n0
+    # (counting live particles is flaky: others land or get handed off in the same step)
+    assert sim.hand_stats["back"] == returned + 1
+    near = sim.alive & (np.abs(sim.x - (-5.0)) < 15) & (np.abs(sim.y - (340 + 200)) < 15)
+    assert near.any()                                            # it's back on the desktop, there
 
 
 # ── snowballs ─────────────────────────────────────────────────────────────
@@ -323,3 +326,18 @@ def test_leaves_can_be_heaped_past_the_natural_height():
         sweep(sim, 320, 1000, 400 - 8, steps=50)
     assert p.h.max() > natural * 1.8, (p.h.max(), natural)
     assert not sim.balls                       # no snowballs from leaves
+
+
+def test_fast_swipe_neither_balls_nor_heaps():
+    sim, p = snowy_window_sim()
+    sweep(sim, 420, 900, 400 - 14, steps=10)   # ~1700 px/s: a flick, not a push
+    assert not sim.balls
+    sim = make_sim(windows=[{"addr": "A", "x": 300, "y": 400, "w": 800, "h": 500}],
+                   state={"season": "fall", "intensity": 2.0})
+    run(sim, 30)
+    p = sim.piles["A"]
+    natural = float(p.cap.max())
+    core.state["intensity"] = 0.0
+    for _ in range(4):
+        sweep(sim, 320, 1000, 400 - 8, steps=14)   # fast swipes through the litter
+    assert p.h.max() <= natural + 1.0, (p.h.max(), natural)
