@@ -101,6 +101,7 @@ jobs:
           npm i --prefix extension/test playwright
           npx --prefix extension/test playwright install chromium   # runner images already have the system libs
           SHOT=extension-test.png node extension/test/run.js
+          node extension/test/companion.js   # follows the desktop app off and on again
       - name: Lint the Firefox build (addons.mozilla.org checks)
         run: npx -y web-ext lint -s extension/dist/firefox
       - uses: actions/upload-artifact@v4

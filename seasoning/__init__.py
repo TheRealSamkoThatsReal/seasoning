@@ -1,2 +1,2 @@
 """seasoning — seasonal particles that fall on your desktop and pile up on your windows."""
-__version__ = "0.3.2"
+__version__ = "0.3.3"

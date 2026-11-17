@@ -96,6 +96,7 @@ cards, images, buttons and video players.
 - **Same weather:** the extension takes the app's season, wind and amount, so the page matches your desktop.
 - **Hand-off at the page:** the app stops drawing its own particles over the page area of the browser window, and the extension draws there instead, so pages don't get double snow.
 - **Settings:** changes in the extension's popup change the desktop app too. Untick **Sync with the desktop app** to keep separate page settings.
+- **On and off together:** turn the desktop app off and pages stop within a few seconds; turn it back on and they resume. A browser that has never seen the desktop app (ChromeOS, say) just keeps snowing on its own.
 
 The extension finds the app on `127.0.0.1` (port 47914, local only).
 

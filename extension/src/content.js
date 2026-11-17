@@ -57,7 +57,8 @@
     return [Math.cos(a) * s * MAX_WIND, Math.sin(a) * s * MAX_WIND * 0.35];
   }
   const siteOff = () => cfg.disabledSites.includes(location.hostname);
-  const active = () => cfg.enabled && !siteOff();
+  let desktopOff = false;        // sync is on and the desktop app was switched off
+  const active = () => cfg.enabled && !siteOff() && !(cfg.companion && desktopOff);
 
   // ── canvas ─────────────────────────────────────────────────────────────
   const cv = document.createElement("canvas");
@@ -576,6 +577,7 @@
   function stop() {
     running = false;
     ctx.clearRect(0, 0, cv.width, cv.height);
+    cv.dataset.stats = JSON.stringify(stats());
   }
   function refresh() {
     if (active() && document.visibilityState === "visible") start(); else stop();
@@ -601,8 +603,13 @@
   });
   function hello() {
     // tell the desktop app (through the background script) which page we're animating
-    if (!cfg.companion) { if (companion) { companion = null; prefill = true; } return; }
-    if (document.visibilityState !== "visible" || !active()) return;
+    if (!cfg.companion) {
+      if (companion) { companion = null; prefill = true; }
+      if (desktopOff) { desktopOff = false; refresh(); }
+      return;
+    }
+    // keep asking even while switched off, so we notice the app coming back
+    if (document.visibilityState !== "visible" || !cfg.enabled || siteOff()) return;
     const k = window.devicePixelRatio || 1;
     const top = Math.max(0, outerHeight - innerHeight) * k;     // toolbars above the page
     const left = Math.max(0, outerWidth - innerWidth) * k;      // a sidebar (Zen, Firefox) on the left
@@ -612,6 +619,15 @@
         const was = !!companion;
         companion = res && res.companion ? res.companion : null;
         if (was !== !!companion) prefill = true;
+        const off = !!(res && res.desktopOff);
+        if (off !== desktopOff) {
+          desktopOff = off;
+          if (off) {               // desktop app went off: so does the page, piles and all
+            for (const p of piles.values()) p.h.fill(0);
+            piles.clear(); P.alive.fill(0); handback.length = 0; prefill = true;
+          }
+          refresh();
+        }
       });
     } catch (e) { /* extension reloaded */ }
   }

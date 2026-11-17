@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 const DEFAULTS = { enabled: true, season: "auto", intensity: 1.0, wind_deg: 90, wind: 0, stick: 0.35,
                    piles: true, companion: true, disabledSites: [] };
 
-let cfg = { ...DEFAULTS }, host = null, tabId = null, desktop = null;
+let cfg = { ...DEFAULTS }, host = null, tabId = null, desktop = null, desktopOff = false;
 
 const get = (keys) => new Promise((res) => {
   const p = api.storage.local.get(keys, res);
@@ -31,6 +31,7 @@ function render() {
   $("site").checked = !host || !cfg.disabledSites.includes(host);
   $("site").disabled = !host;
   $("sync").hidden = !desktop;
+  $("off").hidden = !(cfg.companion && desktopOff);
 }
 
 // with the desktop app running, weather settings go to the app (everything follows it)
@@ -57,7 +58,9 @@ async function stats() {
     tabId = tab.id;
     try { const u = new URL(tab.url); if (/^https?:$/.test(u.protocol)) host = u.hostname; } catch { /* */ }
   }
-  desktop = cfg.companion ? (await msgBg({ type: "desktop" }))?.companion || null : null;
+  const st0 = cfg.companion ? await msgBg({ type: "desktop" }) : null;
+  desktop = st0?.companion || null;
+  desktopOff = !!st0?.desktopOff;
   render();
   stats();
   setInterval(stats, 1000);
@@ -68,7 +71,9 @@ $("piles").onchange = (e) => set({ piles: e.target.checked });
 $("companion").onchange = async (e) => {
   cfg.companion = e.target.checked;
   await set({ companion: cfg.companion });
-  desktop = cfg.companion ? (await msgBg({ type: "desktop" }))?.companion || null : null;
+  const st = cfg.companion ? await msgBg({ type: "desktop" }) : null;
+  desktop = st?.companion || null;
+  desktopOff = !!st?.desktopOff;
   render();
 };
 $("site").onchange = (e) => {
